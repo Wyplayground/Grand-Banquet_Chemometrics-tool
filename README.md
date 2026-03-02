@@ -105,7 +105,7 @@ See [LICENSE](LICENSE) for full terms.
 
 - **Developer**: COFCO Nutrition & Health Research Institute Co., Ltd.
 - **Year**: 2025
-- **Email**: jiawenyang@cofco.com / wenyang.jia123@outlook.com
+- **Email**: jiawenyang@cofco.com / wjia02@qub.ac.uk
 
 ## Acknowledgements
 
@@ -138,5 +138,6 @@ If you use Grand Banquet in your research, please cite:
 *Grand Banquet offers a low-bias baseline for modern data analysis and a practical step towards method governance and reproducibility.*
 
 </div>
+
 
 
