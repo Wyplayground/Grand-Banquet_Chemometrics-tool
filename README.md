@@ -103,8 +103,6 @@ See [LICENSE](LICENSE) for full terms.
 
 ## Contact
 
-- **Developer**: COFCO Nutrition & Health Research Institute Co., Ltd.
-- **Year**: 2025
 - **Email**: jiawenyang@cofco.com / wjia02@qub.ac.uk
 
 ## Acknowledgements
