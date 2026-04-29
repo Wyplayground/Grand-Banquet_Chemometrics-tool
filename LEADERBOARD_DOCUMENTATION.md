@@ -1,17 +1,23 @@
+# Leaderboard methodology (Grand Banquet)
+
+This document describes how **composite scoring** and **overfitting assessment** work in Grand Banquet’s Results Analysis outputs (CSV/HTML leaderboard). For installation, the Windows executable, and how to **cite** the software and ChemRxiv preprint, see [README.md](README.md).
+
+---
+
 ## 1. Methodology
 
 ### 1.1 Composite Scoring Framework
 
 The composite score integrates six components, each weighted to reflect its importance in chemometric model evaluation:
 
-```
+```text
 Composite_Score = Σ (w_i × Metric_i)
 ```
 
 Where the weights are:
 
 | Metric | Weight | Rationale |
-|--------|--------|-----------|
+| --- | --- | --- |
 | Validation Kappa (Val_Kappa) | 0.20 | Agreement metric, measures classification agreement beyond chance |
 | Validation MCC (Val_MCC) | 0.18 | Discrimination metric, balanced measure for imbalanced datasets |
 | Validation Accuracy (Val_Accuracy) | 0.12 | Overall correctness, fundamental performance indicator |
@@ -76,7 +82,7 @@ To penalize severe overfitting, additional penalties are applied:
 
 The penalized ratios are calculated as:
 
-```
+```text
 R'_TC = R_TC × penalty_factor
 R'_CV = R_CV × penalty_factor
 R'_TV = R_TV × penalty_factor
@@ -86,7 +92,7 @@ R'_TV = R_TV × penalty_factor
 
 The final overfitting score uses the **geometric mean** of the three penalized ratios:
 
-```
+```text
 Overfitting_Score = (R'_TC × R'_CV × R'_TV)^(1/3)
 ```
 
@@ -97,6 +103,7 @@ The geometric mean is preferred over the arithmetic mean because:
 3. **Mathematical properties**: Geometric mean of ratios is scale-invariant and appropriate for ratio-based metrics
 
 **Score Interpretation**:
+
 - **0.8 - 1.0**: Excellent consistency, minimal overfitting
 - **0.6 - 0.8**: Good consistency, acceptable overfitting
 - **0.4 - 0.6**: Moderate overfitting, caution advised
@@ -106,7 +113,7 @@ The geometric mean is preferred over the arithmetic mean because:
 
 #### Example 1: Ideal Model (No Overfitting)
 
-```
+```text
 Train_Kappa = 0.95
 CV_Kappa = 0.93
 Val_Kappa = 0.92
@@ -123,7 +130,7 @@ Overfitting_Score = (0.979 × 0.989 × 0.968)^(1/3) = 0.978
 
 #### Example 2: Moderate Overfitting
 
-```
+```text
 Train_Kappa = 1.0
 CV_Kappa = 0.85
 Val_Kappa = 0.75
@@ -138,7 +145,7 @@ Overfitting_Score = (0.68 × 0.706 × 0.60)^(1/3) = 0.66
 
 #### Example 3: Severe Overfitting
 
-```
+```text
 Train_Kappa = 1.0
 CV_Kappa = 0.70
 Val_Kappa = 0.50
@@ -155,7 +162,7 @@ Overfitting_Score = (0.35 × 0.357 × 0.25)^(1/3) = 0.31
 
 The composite score combines performance metrics with overfitting assessment:
 
-```
+```text
 Composite_Score = 
     0.20 × Val_Kappa +
     0.18 × Val_MCC +
@@ -179,6 +186,7 @@ This ensures that:
 For each model combination (preprocessing × feature selection × classifier), the following metrics are collected:
 
 **Validation Set Metrics** (Primary evaluation):
+
 - Kappa
 - MCC (Matthews Correlation Coefficient)
 - Accuracy
@@ -190,16 +198,19 @@ For each model combination (preprocessing × feature selection × classifier), t
 - Confusion Matrix
 
 **Cross-Validation Metrics**:
+
 - Kappa
 - MCC
 - Accuracy
 
 **Training Set Metrics**:
+
 - Kappa
 - MCC
 - Accuracy
 
 **Performance Timing**:
+
 - Training Time (seconds)
 - Prediction Time (seconds)
 
@@ -217,6 +228,7 @@ For each model combination (preprocessing × feature selection × classifier), t
 ### 3.1 Multi-Metric Integration
 
 Unlike single-metric ranking (e.g., accuracy-only), GB's composite score integrates:
+
 - **Agreement metrics** (Kappa): Measures classification quality beyond chance
 - **Discrimination metrics** (MCC): Balanced measure for imbalanced datasets
 - **Precision metrics** (Precision, F1): Important for classification tasks
@@ -225,6 +237,7 @@ Unlike single-metric ranking (e.g., accuracy-only), GB's composite score integra
 ### 3.2 Overfitting Awareness
 
 Traditional approaches often ignore overfitting, leading to selection of models that fail in production. GB's 30% weight on overfitting ensures that:
+
 - Models with inconsistent performance are penalized
 - Models with good generalisation are rewarded
 - Selected models are more likely to perform well on new data
@@ -232,6 +245,7 @@ Traditional approaches often ignore overfitting, leading to selection of models 
 ### 3.3 Standardised Evaluation
 
 GB provides:
+
 - **Consistent methodology** across all model combinations
 - **Reproducible outputs** (CSV and HTML with timestamps)
 - **Transparent scoring** (all weights and calculations documented)
@@ -239,6 +253,7 @@ GB provides:
 ### 3.4 Interactive Exploration
 
 The HTML interface enables:
+
 - **Rapid exploration** of different ranking criteria
 - **Visual identification** of patterns and outliers
 - **Custom analysis** based on specific requirements
@@ -257,4 +272,3 @@ The HTML interface enables:
 2. **Multi-Metric Overfitting**: Extend overfitting assessment to include MCC, Accuracy, and F1 consistency
 3. **Statistical Significance**: Incorporate statistical tests to assess whether performance differences are significant
 4. **Ensemble Recommendations**: Suggest ensemble combinations of top-ranked models
-

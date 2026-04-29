@@ -2,6 +2,8 @@
 
 A comprehensive step-by-step guide to using Grand Banquet (GB) for chemometric data analysis.
 
+**Distribution:** The public release is a **Windows executable** (see [README.md](README.md)). Follow the steps below after launching that build—you do **not** need to install Python or run `pip install`.
+
 ---
 
 ## Table of Contents
@@ -27,6 +29,7 @@ Sample_003,Class_A,0.345,0.678,0.901,0.456,...
 ```
 
 **Required Columns** (in this exact order):
+
 - **Column 0**: `Sample name` - Unique identifier for each sample (string)
 - **Column 1**: `Class` - Class label (string or numeric)
 - **Column 2 onwards**: Feature columns - Numeric values (wavelengths, m/z values, chemical shifts, etc.)
@@ -55,7 +58,7 @@ This section demonstrates a recommended workflow method for efficient analysis:
 
 This method allows you to quickly select all options and then run each step individually, giving you better control over the process.
 
-#### Step-by-Step Demo:
+#### Step-by-Step Demo
 
 1. **Load Your Data** (Tab 1: Data Loading)
    - Select your data file
@@ -106,7 +109,7 @@ This method allows you to quickly select all options and then run each step indi
    - Click **"Generate Leaderboard (CSV/HTML)"** for ranking
    - Review interactive HTML leaderboard
 
-### Advantages of This Method:
+### Advantages of This Method
 
 - **Quick Setup**: "Select All Options" button saves time selecting individual checkboxes
 - **Better Control**: Run each step individually, allowing you to monitor progress
@@ -122,11 +125,13 @@ This method allows you to quickly select all options and then run each step indi
 
 ### Step 1: Launch the Application
 
-```bash
-python grand_banquet.py
-```
+1. Download the release package from the repository **Releases** page (see [README.md](README.md)).
+2. Extract all files to one folder if the download is an archive.
+3. If your package includes `123.png`, keep it in the **same folder** as the `.exe`.
+4. Double-click the Grand Banquet `.exe` to start the application.
 
 The GUI window will open with the following tabs:
+
 1. Data Loading
 2. Preprocessing
 3. Variable Selection
@@ -149,7 +154,8 @@ The GUI window will open with the following tabs:
    - Training set (calibration set) and validation set are created automatically
    - Both sets are saved to `01_raw_data/` folder for reference
 
-**Expected Output**: 
+**Expected Output**:
+
 - Console shows: "Data loaded successfully"
 - Console shows: "Data split completed: Training set: X samples, Test set: Y samples"
 - Calibration and validation sets automatically saved to `01_raw_data/calibration_set.csv` and `01_raw_data/validation_set.csv`
@@ -159,7 +165,7 @@ The GUI window will open with the following tabs:
 
 1. **Navigate to "2. Preprocessing" tab**
 2. **Select Mode**:
-   - **Combination Mode**: Apply multiple methods sequentially
+   - **Combination Mode**: Apply multiple methods sequentially (on progress)
    - **Individual Mode**: Evaluate each method separately
 3. **Select Preprocessing Methods**:
    - Check boxes for desired methods
@@ -167,6 +173,7 @@ The GUI window will open with the following tabs:
 5. **Wait for completion**: Progress bar shows status
 
 **Expected Output**:
+
 - Preprocessed data saved to `02_preprocessed_data/`
 - Status message: "Preprocessing completed successfully"
 
@@ -188,6 +195,7 @@ The GUI window will open with the following tabs:
 5. **Review Results**: Selected features saved to `03_variable_selection/`
 
 **Expected Output**:
+
 - Selected features CSV files
 - Feature selection statistics
 - Status message: "Variable selection completed successfully"
@@ -209,6 +217,7 @@ The GUI window will open with the following tabs:
 5. **Monitor Progress**: Console output shows training status
 
 **Expected Output**:
+
 - Trained models saved to `04_model_training/`
 - Performance metrics displayed
 - Status message: "Model training completed"
@@ -233,6 +242,7 @@ The GUI window will open with the following tabs:
    - CSV file saved for further analysis
 
 **Expected Output**:
+
 - Performance report CSV
 - Comparison visualizations
 - Interactive HTML leaderboard
@@ -242,7 +252,7 @@ The GUI window will open with the following tabs:
 
 1. **Navigate to "6. AI Report Generation" tab**
 2. **Obtain API Key**:
-   - Aliyun DashScope: https://dashscope.console.aliyun.com/
+   - Aliyun DashScope: [DashScope console](https://dashscope.console.aliyun.com/)
 3. **Enter API Key** in the text field
 4. **Select Model**: Choose LLM (e.g., "qwen-plus", "QWQ")
 5. **Analyze Performance**: Click "Analyze Model Performance" (required first step)
@@ -250,6 +260,7 @@ The GUI window will open with the following tabs:
 7. **Review Reports**: Word and PDF files saved to `06_ai_reports/`
 
 **Expected Output**:
+
 - Narrative-style analysis reports
 - Word (.docx) and PDF formats
 - Reports for different model groups (Perfect, Top 10%, etc.)
@@ -261,6 +272,7 @@ The GUI window will open with the following tabs:
 ### Problem 1: "FileNotFoundError" when loading data
 
 **Solution**:
+
 - Check file path is correct
 - Ensure file is CSV format
 - Check file is not open in another program
@@ -268,6 +280,7 @@ The GUI window will open with the following tabs:
 ### Problem 2: "Memory error" during training
 
 **Solution**:
+
 - Reduce number of preprocessing combinations
 - Use feature selection to reduce dimensionality
 - Close other applications to free memory
@@ -276,6 +289,7 @@ The GUI window will open with the following tabs:
 ### Problem 3: Models fail to train
 
 **Solution**:
+
 - Check data has no missing values
 - Verify class labels are valid
 - Ensure sufficient samples per class (minimum 3-5)
@@ -284,15 +298,14 @@ The GUI window will open with the following tabs:
 ### Problem 4: XGBoost import error
 
 **Solution**:
-- Grand Banquet automatically falls back to LightGBM
-- No action needed, but you can install XGBoost:
-  ```bash
-  pip install xgboost
-  ```
+
+- In the **released executable**, libraries are bundled with the app. Grand Banquet **automatically falls back to LightGBM** if XGBoost is not available—no separate install step is required.
+- If the console still reports an XGBoost-related failure after updating to the latest release, contact the maintainers (see FAQ).
 
 ### Problem 5: Slow performance
 
 **Solution**:
+
 - Enable parallel processing (default: enabled)
 - Reduce number of models to train
 - Use faster feature selection (VIP instead of GA)
@@ -301,6 +314,7 @@ The GUI window will open with the following tabs:
 ### Problem 6: API key error for AI reports
 
 **Solution**:
+
 - Verify API key is correct
 - Check API quota/balance
 - Ensure internet connection
@@ -311,11 +325,12 @@ The GUI window will open with the following tabs:
 
 ### Q1: Can I use my own preprocessing methods?
 
-**A**: Currently, you can use the 15 built-in methods. Custom methods would require code modification. See source code for implementation details.
+**A**: Currently, you can use the 15 built-in methods. Custom preprocessing is **not** available in the distributed executable; if you need a specialised workflow, contact the developers.
 
 ### Q2: Do I need to prepare separate calibration and validation files?
 
 **A**: No, Grand Banquet automatically splits your data. Just load one CSV file, and the system will:
+
 - Automatically split it into training (calibration) and validation sets
 - Use stratified sampling to maintain class distribution
 - Save both sets to `01_raw_data/` folder for your reference
@@ -324,6 +339,7 @@ The GUI window will open with the following tabs:
 ### Q3: How do I choose the best model?
 
 **A**: Use the leaderboard composite score as primary criterion, then check:
+
 - Overfitting Score > 0.75
 - Application-specific metrics near 1.00 (Kappa, MCC, etc.)
 - Model interpretability (if needed)
@@ -342,11 +358,12 @@ The GUI window will open with the following tabs:
 
 ### Q7: Can I modify the code?
 
-**A**: Yes, you can modify and distribute the code under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+**A**: This public release is a **compiled Windows application**, not source code—you cannot change the built-in algorithms yourself. The project is licensed under **Apache License 2.0**; you may use and redistribute the executable according to [LICENSE](LICENSE). For feature requests or collaboration, use the contact details in **Q9**.
 
 ### Q8: What data types are supported?
 
 **A**: Grand Banquet works with any high-dimensional sensor data:
+
 - Spectroscopy (IR, FTIR, NIR, UV-Vis, Raman)
 - Mass spectrometry (LC-MS, GC-MS, MALDI-TOF)
 - NMR (1H-NMR, 13C-NMR)
@@ -356,8 +373,6 @@ The GUI window will open with the following tabs:
 
 ### Q9: How do I report bugs or request features?
 
-**Email**: jiawenyang@cofco.com / wenyang.jia123@outlook.com / wjia02@qub.ac.uk (optional)
+**Email**: [wjia02@qub.ac.uk](mailto:wjia02@qub.ac.uk) / [jiawenyang@cofco.com](mailto:jiawenyang@cofco.com)
 
 ---
-
-
