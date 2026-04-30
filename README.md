@@ -30,7 +30,7 @@ Grand Banquet (GB) is a next-generation chemometrics framework for classificatio
 
 ### Download and run (Windows)
 
-1. **Download** the latest `.exe` from this repository’s **release** page. https://github.com/Wyplayground/Grand-Banquet_Chemometrics-tool/releases/tag/release
+1. **Download** the latest `.exe` from this repository’s [**Releases (latest)**](https://github.com/Wyplayground/Grand-Banquet_Chemometrics-tool/releases/latest): open that page, expand **Assets**, and download the `.exe`.
 2. **Extract** the archive if you distribute a ZIP, and keep all files from the package in the **same folder**.
 3. **Double-click** the `.exe` to start the GUI. No Python installation or `pip` is required.
 
