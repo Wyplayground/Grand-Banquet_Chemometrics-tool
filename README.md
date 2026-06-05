@@ -74,7 +74,7 @@ If you prefer to select methods manually:
 ## Documentation
 
 - **[User Guide](USER_GUIDE.md)** - Step-by-step user guide (Start here)
-- **[Preprint (ChemRxiv)](https://doi.org/10.26434/chemrxiv.15000013/v3)** — latest public manuscript *(v2 on ChemRxiv)* 
+- **[Preprint (ChemRxiv)](https://doi.org/10.26434/chemrxiv.15000013/v3)** — latest public manuscript *(v3 on ChemRxiv)* 
 - **Peer-reviewed journal article** — currently **under submission**; this README will be updated when it is published.
 - **[Leaderboard System](LEADERBOARD_DOCUMENTATION.md)** - Performance evaluation details
 
