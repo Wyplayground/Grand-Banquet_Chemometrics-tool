@@ -1,145 +1,151 @@
-# Grand Banquet (GB)
-
-A next-generation chemometrics framework for classification analysis on data matrix.
+# Grand Banquet Chemometrics
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](README.md)
+[![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-blue.svg)](README.md)
 [![Version](https://img.shields.io/badge/Version-v0.0-orange.svg)](README.md)
 
-Replacing ad-hoc "try-and-trust" workflows with near-exhaustive pipeline search (“Glass box” concept compared to “black-box”) and standardised, multi-metric ranking.
+Grand Banquet (GB) is a glass-box chemometrics framework for classification and regression. It combines preprocessing, variable selection, modelling, and optional LLM summaries in one reproducible workflow.
 
----
+The source package contains two applications backed by a shared engine:
 
-## Overview
+- `classification/grand_banquet_classification.py`
+- `regression/grand_banquet_regression.py`
+- `gb_core/` for shared data handling, transforms, selectors, models, evaluation, and reporting
 
-Grand Banquet (GB) is a next-generation chemometrics framework for classification analysis on data matrix that systematically explores up to **990 unique combinations** (15 preprocessing × 6 feature selection × 11 classifiers) and provides comprehensive performance evaluation with multi-metric ranking.
+The image `123.png` is used by the graphical interface.
+   > **Tip**: Place `123.png` in the **same folder**. The image `123.png` is inspired by David Hockney's masterpiece *Portrait of an Artist (Pool with Two Figures)*, paying homage to this iconic work. Much like one standing by a pool, gazing at one's own reflection in the water, we too observe data. However sophisticated our methods may be, it remains akin to viewing the data through rippling waters: a pursuit of truth through the wave of uncertainty.
 
-**Distribution:** This repository is intended for **Windows executable (`.exe`) releases only**. Python source code is **not** published here. Get the packaged application from the repository **Releases** page and run it—no Python installation or `pip` required.
+## Scientific workflow
 
-### Key Features
+Each task can enumerate 15 preprocessing methods, 6 variable-selection routes, and 11 task-specific models, giving 990 candidate pipeline structures.
 
-- **Exhaustive Pipeline Enumeration**: Systematically explores 990 method combinations
-- **Multi-Metric Evaluation**: Kappa, MCC, Accuracy, Precision, Sensitivity, Specificity
-- **Overfitting Assessment**: Ratio-based evaluation penalises inconsistent models
-- **Composite Leaderboard**: Balances predictive performance with generalisation
-- **Parallel Processing**: Model-level parallelism for faster training
-- **Interactive Visualisations**: HTML leaderboards with sorting and filtering
-- **AI-Powered Reports**: LLM-generated narrative summaries
+| Mode | Intended use | Model hyperparameters | Variable-selection budget |
+|---|---|---|---|
+| Exploration | Reduced settings | Fixed model settings | Reduced |
+| Standard | Routine analysis | Medium grid | Full |
+| Full | Publication-oriented analysis | Expanded grid | Full |
 
-## Quick Start
+The calculation separates pipeline ranking from independent validation:
 
-### Download and run (Windows)
+1. Imputation, preprocessing, variable selection, and hyperparameter tuning use only the relevant cross-validation training subset.
+2. Each candidate receives calibration-set cross-validation predictions and `CV_*` metrics.
+3. `Selection_Score` and `Selection_Rank` are calculated from `CV_*` metrics and cross-validation stability only.
+4. Ranks are frozen before the independent validation data are evaluated.
+5. Every successfully ranked pipeline is refitted using all calibration data and receives `Cal_*` and `Val_*` metrics.
+6. Rank 1 is additionally exported as a fitted `.joblib` bundle with `rank1_validation_predictions.csv`.
 
-1. **Download** the latest `.exe` from this repository’s [**Releases (latest)**](https://github.com/Wyplayground/Grand-Banquet_Chemometrics-tool/releases/latest): open that page, expand **Assets**, and download the `.exe`.
-2. **Extract** the archive if you distribute a ZIP, and keep all files from the package in the **same folder**.
-3. **Double-click** the `.exe` to start the GUI. No Python installation or `pip` is required.
+Classification ranking weights are Kappa 30%, MCC 25%, macro-F1 20%, balanced accuracy 15%, and stability 10%. Regression weights are inverse RMSE 30%, R2 25%, RPD 20%, RPIQ 15%, and stability 10%.
 
-   > **Tip**: Place `123.png` in the **same folder** as the executable. The image `123.png` is inspired by David Hockney's masterpiece *Portrait of an Artist (Pool with Two Figures)*, paying homage to this iconic work. Much like one standing by a pool, gazing at one's own reflection in the water, we too observe data. However sophisticated our methods may be, it remains akin to viewing the data through rippling waters: a pursuit of truth through the wave of uncertainty.
+See `Evaluation methods.md` for the evaluation contract and [`to_the_user.md`](to_the_user.md) for the Full-mode design, advanced dynamic-search guidance, Group/Split behaviour, and ranking options.
 
-### Quick Start: Generate 990 Models with One Click
+## Installation
 
-**The fastest way to explore all 990 combinations (15 preprocessing × 6 feature selection × 11 classifiers):**
+```powershell
+git clone https://github.com/Wyplayground/Grand-Banquet_Chemometrics-tool.git
+cd Grand-Banquet_Chemometrics-tool
+conda create -n gb python=3.11 -y
+conda activate gb
+python -m pip install -r requirements.txt
+```
 
-1. **Load Your Data** (Tab 1: Data Loading)
-   - Select your CSV/XLSX file
-   - Click "Load and Split Data"
+Python 3.10–3.13 are supported. After `conda activate gb`, run the commands below from the repository root.
 
-2. **Select All Options** (Tab 5: Results Analysis)
-   - Navigate to **"5. Results Analysis"** tab
-   - Click the **"Select All Options"** button
-   - This automatically selects all 15 preprocessing methods, 6 feature selection algorithms, and 11 classification models
-   - Console will show: "All options selected successfully!"
+## Running
 
-3. **Configure & Run** (Tabs 2-4)
-   - **Tab 2**: Click "Run Preprocessing"
-   - **Tab 3**: Click "Run Variable Selection"
-   - **Tab 4**: Set CV folds and Click "Train Models" (trains all 990 combinations in parallel!)
+GUI:
 
-4. **View Results** (Tab 5)
-   - Generate leaderboard and performance reports
-   - Review interactive HTML leaderboard with all 990 model rankings
+```powershell
+python classification\grand_banquet_classification.py
+python regression\grand_banquet_regression.py
+```
 
-For detailed step-by-step guide, see [USER_GUIDE.md](USER_GUIDE.md#25-quick-demo-efficient-workflow-method) (Section 2.5)
+Training uses most available CPUs automatically. Interrupted GUI runs resume from the project directory unless you reset the project or choose a new output folder.
 
-### Basic Usage (Manual Selection)
+## Graphical interface
 
-If you prefer to select methods manually:
+Classification and regression share a six-step layout. Screenshots are in `gui_screenshots/`.
 
-1. **Load Data**: Navigate to "1. Data Loading" tab and select your CSV/XLSX file
-2. **Preprocess**: Choose preprocessing methods in "2. Preprocessing" tab
-3. **Select Features**: Choose feature selection algorithms in "3. Variable Selection" tab
-4. **Train Models**: Select classifiers in "4. Model Training" tab
-5. **Analyse Results**: View performance metrics and generate leaderboard in "5. Results Analysis" tab
+| Step | Classification | Regression |
+|---|---|---|
+| 1 Data loading | [png](gui_screenshots/gui_classification_step1_data_loading.png) | [png](gui_screenshots/gui_regression_step1_data_loading.png) |
+| 2 Preprocessing | [png](gui_screenshots/gui_classification_step2_preprocessing.png) | [png](gui_screenshots/gui_regression_step2_preprocessing.png) |
+| 3 Variable selection | [png](gui_screenshots/gui_classification_step3_variable_selection.png) | [png](gui_screenshots/gui_regression_step3_variable_selection.png) |
+| 4 Model training | [png](gui_screenshots/gui_classification_step4_model_training.png) | [png](gui_screenshots/gui_regression_step4_model_training.png) |
+| 5 Results analysis | [png](gui_screenshots/gui_classification_step5_results_analysis.png) | [png](gui_screenshots/gui_regression_step5_results_analysis.png) |
+| 6 AI report | [png](gui_screenshots/gui_classification_step6_ai_report_generation.png) | [png](gui_screenshots/gui_regression_step6_ai_report_generation.png) |
 
-## Documentation
+Task-specific notes: [`classification/CLASSIFICATION_USER_GUIDE.md`](classification/CLASSIFICATION_USER_GUIDE.md), [`regression/REGRESSION_USER_GUIDE.md`](regression/REGRESSION_USER_GUIDE.md).
 
-- **[User Guide](USER_GUIDE.md)** - Step-by-step user guide (Start here)
-- **[Preprint (ChemRxiv)](https://doi.org/10.26434/chemrxiv.15000013/v3)** — latest public manuscript *(v3 on ChemRxiv)* 
-- **Peer-reviewed journal article** — currently **under submission**; this README will be updated when it is published.
-- **[Leaderboard System](LEADERBOARD_DOCUMENTATION.md)** - Performance evaluation details
+## Input format
 
-## Supported Methods
+Classification:
 
-### Preprocessing (15 methods)
+```csv
+Sample name,Class,Group,Split,Feature1,Feature2
+Sample_001,Fresh,Batch_01,calibration,0.123,0.456
+```
 
-Raw, Baseline Correction, Normalise, Centre and Scale, Log Transform, Centring, Pareto Scaling, SNV, MSC, First/Second Derivative, Area/Range Normalisation, SG Smooth, SG Derivative
+Regression:
 
-### Feature Selection (6 algorithms)
+```csv
+Sample name,Target,Group,Split,Feature1,Feature2
+Sample_001,12.3,Fish_01,validation,0.123,0.456
+```
 
-VIP, Genetic Algorithm (GA), iPLS, CARS, SFLA, None
+- `Sample name` identifies each row. Classification requires `Class`; regression requires numeric `Target`.
+- `Group` is optional. Repeated measurements, paired observations, or spectra from the same independent object should share one group identifier. A group is kept intact when calibration, validation, and cross-validation subsets are formed.
+- `Split` is optional. Calibration labels are `calibration`, `cal`, `train`, or `training`; independent-validation labels are `validation`, `val`, or `test`. If `Split` is absent, GB creates the split from the configured ratio and random seed, using groups when supplied.
+- Every remaining column is treated as a numeric predictor. A feature column with no numeric values is rejected; missing numeric values are imputed from the applicable training subset.
 
-### Classification Models (11 models)
+## Outputs
 
-PLS-DA, LDA, SVM (Linear/RBF), Random Forest, XGBoost, Gradient Boosting, KNN, Logistic Regression, Naive Bayes, Neural Network
+Each completed run writes:
 
-## Licence
+- `pipeline_results.csv` and `leaderboard.csv`
+- `leaderboard.html`
+- per-pipeline cross-validation predictions and fold metadata
+- per-pipeline validation predictions for successfully evaluated pipelines
+- `rank1_validation_predictions.csv`
+- the fitted Rank 1 `.joblib` bundle
+- `run_manifest.json` and `rank1_final_refit.json`
+- diagnostic plots and explicit failed-stage records
 
-This project is licensed under the **Apache Licence 2.0**.
-See [LICENSE](LICENSE) for full terms.
+`Schema_Version` is `0.0`. The manifest also records software version `0.0.0`, dataset fingerprint, seed, mode, split membership, model backend, pipeline definitions, and validation success/failure counts, forming the Reproducible Analysis Record.
 
-## Contact
+## Data availability
 
-- **Email**: [wjia02@qub.ac.uk](mailto:wjia02@qub.ac.uk) / [jiawenyang@cofco.com](mailto:jiawenyang@cofco.com)
+This source repository does not include example datasets or the datasets used in the corresponding article.
 
-## Acknowledgements
+## Qwen scientific summaries
 
-Grand Banquet integrates established chemometric methods and machine learning algorithms from the scientific community. Special thanks to the open-source community for the excellent libraries that make this project possible.
-
-## Software copyright in China
-
-Registration Number: 2025SR1655639
+The optional reporting function sends structured result summaries rather than raw feature matrices by default. API keys are read from the masked GUI field or `DASHSCOPE_API_KEY` and are not written to project state.
 
 ## Citation
 
-If you use Grand Banquet in your research, please cite the **ChemRxiv preprint** below. When the peer-reviewed article appears, add or switch to that citation as appropriate.
+If you use Grand Banquet in your research, please cite the ChemRxiv preprint below. Update or add the peer-reviewed journal citation when it is available.
+
+Jia, W.; Hong, Y.; Yao, Z.; Koidis, T.; Wu, D.; Huang, H. Grand Banquet: A Glass-Box Chemometric Framework for Analytical Data Matrices. *ChemRxiv* **2026**. https://doi.org/10.26434/chemrxiv.15000013/v4
 
 ```bibtex
-@misc{grand_banquet_chemrxiv_2025,
-  title = {Grand Banquet: A Comprehensive Chemometric Framework for Sensor Data Analysis},
-  author = {COFCO Nutrition \& Health Research Institute Co., Ltd.},
-  year = {2025},
-  howpublished = {ChemRxiv preprint},
-  doi = {10.26434/chemrxiv.15000013},
-  url = {https://chemrxiv.org/doi/full/10.26434/chemrxiv.15000013/v2},
-  note = {Preprint; peer-reviewed journal version under submission}
+@article{jia2026grandbanquet,
+  title   = {Grand Banquet: A Glass-Box Chemometric Framework for Analytical Data Matrices},
+  author  = {Jia, Wenyang and Hong, Yunhe and Yao, Ziwei and Koidis, Tassos and Wu, Di and Huang, Honggang},
+  year    = {2026},
+  journal = {ChemRxiv},
+  doi     = {10.26434/chemrxiv.15000013/v4},
+  url     = {https://doi.org/10.26434/chemrxiv.15000013/v4},
+  note    = {Preprint}
 }
 ```
 
-Software (executable) reference if needed:
+## Licence
 
-```bibtex
-@software{grand_banquet_2025,
-  title = {Grand Banquet: A Comprehensive Chemometric Framework for Sensor Data Analysis},
-  author = {COFCO Nutrition \& Health Research Institute Co., Ltd.},
-  year = {2025},
-  version = {v0.0},
-  url = {https://github.com/your-username/grand-banquet},
-  licence = {Apache-2.0}
-}
-```
+Code is licensed under the Apache License 2.0. See `LICENSE`.
 
----
+## Contact
 
-Inspired by the concept: "There is no one silver bullet".
+- Email: [wjia02@qub.ac.uk](mailto:wjia02@qub.ac.uk)
 
-Grand Banquet offers a low-bias baseline for modern data analysis and a practical step towards method governance and reproducibility.
+## Acknowledgements
+
+Grand Banquet integrates established chemometric methods and machine learning algorithms from the scientific community. Special thanks to the open-source community for the libraries that make this project possible.
