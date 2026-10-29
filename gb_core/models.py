@@ -174,63 +174,63 @@ def model_grid(task: TaskType, name: str, mode: EvaluationMode) -> Dict[str, lis
     if mode is EvaluationMode.EXPLORATION:
         return {}
     task = TaskType(task)
-    full = mode is EvaluationMode.FULL
+    audit = mode is EvaluationMode.AUDIT
     if task is TaskType.CLASSIFICATION:
         grids = {
-            "PLS-DA": {"n_components": [2, 5, 8, 10, 12] if full else [2, 5, 8]},
+            "PLS-DA": {"n_components": [2, 5, 8, 10, 12] if audit else [2, 5, 8]},
             "SVM-DA (linear)": {"model__C": [0.1, 1.0, 10.0]},
             "SVM-DA (rbf)": {"model__C": [1.0, 10.0], "model__gamma": ["scale", 0.01, 0.1]},
             "Random Forest": {
-                "max_depth": [None, 10, 20] if full else [None, 10],
+                "max_depth": [None, 10, 20] if audit else [None, 10],
                 "max_features": ["sqrt", 0.5],
-                **({"n_estimators": [120, 200]} if full else {}),
+                **({"n_estimators": [120, 200]} if audit else {}),
             },
             "XGBoost": {
-                "max_depth": [3, 6, 8] if full else [3, 6],
+                "max_depth": [3, 6, 8] if audit else [3, 6],
                 "learning_rate": [0.05, 0.1],
-                **({"n_estimators": [100, 200]} if full else {}),
+                **({"n_estimators": [100, 200]} if audit else {}),
             },
             "Gradient Boosting": {"learning_rate": [0.05, 0.1], "max_depth": [2, 3]},
             "KNN": {"model__n_neighbors": [3, 5, 7]},
             "Logistic Regression": {"model__C": [0.1, 1.0, 10.0]},
             "Neural Network": {
-                "model__alpha": [0.0001, 0.001, 0.01] if full else [0.0001, 0.01],
+                "model__alpha": [0.0001, 0.001, 0.01] if audit else [0.0001, 0.01],
                 **(
                     {
                         "model__hidden_layer_sizes": [(50,), (80,), (120,)],
                         "model__max_iter": [2000, 5000],
                     }
-                    if full
+                    if audit
                     else {"model__max_iter": [2000]}
                 ),
             },
         }
     else:
         grids = {
-            "PLS Regression": {"n_components": [2, 5, 8, 10, 12] if full else [2, 5, 8]},
+            "PLS Regression": {"n_components": [2, 5, 8, 10, 12] if audit else [2, 5, 8]},
             "SVR (linear)": {"model__C": [0.1, 1.0, 10.0]},
             "SVR (rbf)": {"model__C": [1.0, 10.0], "model__gamma": ["scale", 0.01, 0.1]},
             "Random Forest Regression": {
-                "max_depth": [None, 10, 20] if full else [None, 10],
+                "max_depth": [None, 10, 20] if audit else [None, 10],
                 "max_features": ["sqrt", 0.7],
-                **({"n_estimators": [120, 200]} if full else {}),
+                **({"n_estimators": [120, 200]} if audit else {}),
             },
             "XGBoost Regression": {
-                "max_depth": [3, 6, 8] if full else [3, 6],
+                "max_depth": [3, 6, 8] if audit else [3, 6],
                 "learning_rate": [0.05, 0.1],
-                **({"n_estimators": [100, 200]} if full else {}),
+                **({"n_estimators": [100, 200]} if audit else {}),
             },
             "Gradient Boosting Regression": {"learning_rate": [0.05, 0.1], "max_depth": [2, 3]},
             "KNN Regression": {"model__n_neighbors": [3, 5, 7]},
             "Ridge Regression": {"model__alpha": [0.1, 1.0, 10.0]},
             "Neural Network Regression": {
-                "model__alpha": [0.0001, 0.001, 0.01] if full else [0.0001, 0.01],
+                "model__alpha": [0.0001, 0.001, 0.01] if audit else [0.0001, 0.01],
                 **(
                     {
                         "model__hidden_layer_sizes": [(50,), (80,), (120,)],
                         "model__max_iter": [2000, 5000],
                     }
-                    if full
+                    if audit
                     else {"model__max_iter": [2000]}
                 ),
             },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grand Banquet v0.0 regression entry point."""
+"""Grand Banquet vNext regression entry point."""
 
 from __future__ import annotations
 

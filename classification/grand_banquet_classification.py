@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grand Banquet v0.0 classification entry point."""
+"""Grand Banquet vNext classification entry point."""
 
 from __future__ import annotations
 

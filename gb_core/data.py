@@ -102,10 +102,10 @@ def load_dataset(path: str | Path, task: TaskType) -> LoadedDataset:
 def split_dataset(dataset: LoadedDataset, config: RunConfig) -> DatasetSplit:
     indices = np.arange(len(dataset.target))
     if dataset.split_labels is not None:
-        validation_mask = dataset.split_labels.isin({"validation", "val", "test"}).to_numpy()
+        validation_mask = dataset.split_labels.isin({"holdout", "validation", "val", "test"}).to_numpy()
         cal_mask = dataset.split_labels.isin({"calibration", "cal", "train", "training"}).to_numpy()
         if not validation_mask.any() or not cal_mask.any() or np.any(validation_mask & cal_mask):
-            raise ValueError("Split must define non-empty, disjoint calibration/train and independent validation rows.")
+            raise ValueError("Split must define non-empty, disjoint calibration/train and internal holdout rows.")
         cal_idx, validation_idx = indices[cal_mask], indices[validation_mask]
     elif dataset.groups is not None:
         splitter = GroupShuffleSplit(n_splits=1, test_size=config.validation_ratio, random_state=config.random_state)
@@ -141,3 +141,40 @@ def split_dataset(dataset: LoadedDataset, config: RunConfig) -> DatasetSplit:
         groups_validation=take(dataset.groups, validation_idx) if dataset.groups is not None else None,
         fingerprint=dataset.fingerprint,
     )
+
+
+def create_demo_data(path: str | Path, task: TaskType, n_samples: int = 72, n_features: int = 48) -> Path:
+    path = Path(path)
+    task = TaskType(task)
+    rng = np.random.default_rng(42)
+    axis = np.linspace(400, 1000, n_features)
+    latent_a = rng.normal(size=n_samples)
+    latent_b = rng.uniform(-1.0, 1.0, size=n_samples)
+    X = np.empty((n_samples, n_features), dtype=float)
+    for row in range(n_samples):
+        baseline = 0.16 + 0.02 * latent_b[row] + 0.00008 * (axis - axis.mean())
+        peak_a = np.exp(-0.5 * ((axis - 520) / 35) ** 2) * (0.55 + 0.18 * latent_a[row])
+        peak_b = np.exp(-0.5 * ((axis - 700) / 48) ** 2) * (0.34 - 0.11 * latent_b[row])
+        peak_c = np.exp(-0.5 * ((axis - 850) / 60) ** 2) * (0.22 + 0.08 * latent_a[row])
+        X[row] = baseline + peak_a + peak_b + peak_c + rng.normal(0, 0.015, n_features)
+
+    out = pd.DataFrame({"Sample name": [f"GB_{task.value[:3].upper()}_{i + 1:03d}" for i in range(n_samples)]})
+    if task is TaskType.CLASSIFICATION:
+        score = latent_a - 0.45 * latent_b + rng.normal(0, 0.18, n_samples)
+        out["Class"] = pd.cut(score, bins=[-np.inf, -0.45, 0.45, np.inf], labels=["Low", "Medium", "High"]).astype(str)
+    else:
+        first_feature = min(10, n_features - 1)
+        second_feature = min(30, n_features - 1)
+        out["Target"] = (
+            18
+            + 6 * latent_a
+            - 3.5 * latent_b
+            + 2 * X[:, first_feature]
+            - 1.2 * X[:, second_feature]
+            + rng.normal(0, 0.7, n_samples)
+        )
+    for wavelength, values in zip(axis, X.T):
+        out[f"{wavelength:.1f}nm"] = values
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False, encoding="utf-8-sig")
+    return path

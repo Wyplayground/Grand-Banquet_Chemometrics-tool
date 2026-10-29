@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-SOFTWARE_VERSION = "0.0.0"
 SCHEMA_VERSION = "0.0"
 
 
@@ -20,7 +19,7 @@ class TaskType(str, Enum):
 
 
 class EvaluationMode(str, Enum):
-    FULL = "full"
+    AUDIT = "audit"
     STANDARD = "standard"
     EXPLORATION = "exploration"
 
@@ -134,6 +133,8 @@ class RunConfig:
     strict: bool = False
     resume: bool = True
     selector_penalty: float = 0.02
+    legacy_export: bool = False
+
     def __post_init__(self) -> None:
         self.task = TaskType(self.task)
         self.mode = EvaluationMode(self.mode)
@@ -307,7 +308,7 @@ def enumerate_specs(
 
 
 def mode_uses_full_selector_budget(mode: EvaluationMode) -> bool:
-    return EvaluationMode(mode) in {EvaluationMode.FULL, EvaluationMode.STANDARD}
+    return EvaluationMode(mode) in {EvaluationMode.AUDIT, EvaluationMode.STANDARD}
 
 
 def mode_uses_hyperparameter_grid(mode: EvaluationMode) -> bool:

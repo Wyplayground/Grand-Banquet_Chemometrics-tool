@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -23,7 +25,6 @@ from .contracts import (
     RunStatus,
     SCHEMA_VERSION,
     SG_PREPROCESSING_METHODS,
-    SOFTWARE_VERSION,
     TaskType,
     empty_result_row,
     mode_uses_hyperparameter_grid,
@@ -31,6 +32,7 @@ from .contracts import (
 )
 from .data import DatasetSplit
 from .metrics import (
+    add_legacy_validation_aliases,
     add_overfit_diagnostics,
     add_stage_metrics,
     compute_metrics,
@@ -49,6 +51,9 @@ from .transformers import (
 )
 
 
+EVALUATION_REVISION = "aca-v2.5-review-2026-10-08-cars-layout-fix"
+
+
 @dataclass
 class RunOutputs:
     results: pd.DataFrame
@@ -59,6 +64,26 @@ class RunOutputs:
     best_pipeline: Optional[Path]
     validation_predictions: Optional[Path]
 
+    @property
+    def default_pipeline(self) -> Optional[Path]:
+        """Score-ordered default example; best_pipeline remains a compatibility alias."""
+        return self.best_pipeline
+
+
+@dataclass
+class CandidateExport:
+    pipeline_id: str
+    bundle_path: Path
+    manifest_path: Path
+    validation_predictions: Optional[Path]
+    validation_status: str
+    validation_error: str
+    calibration_metrics: Dict[str, float]
+    validation_metrics: Dict[str, float]
+    selected_feature_names: List[str]
+    hyperparameters: Dict[str, object]
+    actual_backend: str
+
 
 def _jsonable(value):
     if isinstance(value, dict):
@@ -66,9 +91,9 @@ def _jsonable(value):
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        return _jsonable(value.tolist())
     if isinstance(value, np.generic):
-        return value.item()
+        return _jsonable(value.item())
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, float) and not np.isfinite(value):
@@ -81,13 +106,6 @@ def _evaluate_pipeline_worker(split, config, run_id, spec):
 
     with threadpool_limits(limits=1):
         return EvaluationEngine(split, config).evaluate_one(run_id, spec)
-
-
-def _evaluate_final_metrics_worker(split, config, spec):
-    from threadpoolctl import threadpool_limits
-
-    with threadpool_limits(limits=1):
-        return EvaluationEngine(split, config).evaluate_final_metrics(spec)
 
 
 class EvaluationEngine:
@@ -107,13 +125,17 @@ class EvaluationEngine:
         # Lazy: ProcessPool workers only call evaluate_one and must not open checkpoint.sqlite.
         self._checkpoint: Optional[CheckpointStore] = None
         self.label_encoder: Optional[LabelEncoder] = None
+        self._validation_label_error: Optional[str] = None
         if config.task is TaskType.CLASSIFICATION:
             self.label_encoder = LabelEncoder().fit(np.asarray(split.y_cal))
             unseen = set(np.asarray(split.y_validation)).difference(self.label_encoder.classes_)
             if unseen:
-                raise ValueError(f"Independent validation contains unseen classes: {sorted(map(str, unseen))}")
+                self._validation_label_error = f"Internal holdout contains unseen classes: {sorted(map(str, unseen))}"
             self.y_cal = self.label_encoder.transform(np.asarray(split.y_cal))
-            self.y_validation = self.label_encoder.transform(np.asarray(split.y_validation))
+            self.y_validation = (
+                np.asarray(split.y_validation) if unseen
+                else self.label_encoder.transform(np.asarray(split.y_validation))
+            )
         else:
             self.y_cal = np.asarray(split.y_cal, dtype=float)
             self.y_validation = np.asarray(split.y_validation, dtype=float)
@@ -127,10 +149,9 @@ class EvaluationEngine:
             self._checkpoint = CheckpointStore(self.output_dir / "checkpoint.sqlite")
         return self._checkpoint
 
-    def _run_id(self, specs: Sequence[PipelineSpec]) -> str:
+    def _run_id(self, specs: Sequence[PipelineSpec], *, include_revision: bool = True) -> str:
         scientific_config = {
             "task": self.config.task.value,
-            "software_version": SOFTWARE_VERSION,
             "schema_version": SCHEMA_VERSION,
             "mode": self.config.mode.value,
             "validation_ratio": self.config.validation_ratio,
@@ -139,6 +160,8 @@ class EvaluationEngine:
             "random_state": self.config.random_state,
             "selector_penalty": self.config.selector_penalty,
         }
+        if include_revision:
+            scientific_config["evaluation_revision"] = EVALUATION_REVISION
         payload = json.dumps(
             {
                 "fingerprint": self.split.fingerprint,
@@ -190,10 +213,10 @@ class EvaluationEngine:
         )
 
     def _search_sg_params(self, spec: PipelineSpec, X, y, groups=None) -> Dict[str, int]:
-        """Search SG window/order using only the current training data.
+        """Fold-local supervised SG window/order search; Exploration keeps defaults.
 
         Uses the pipeline model on all features (no selector) so SG search stays
-        inexpensive relative to the outer two-level cross-validation and selector loop.
+        cheap relative to the outer nested-CV + selector loop.
         """
         if spec.preprocessing not in SG_PREPROCESSING_METHODS:
             return {}
@@ -337,11 +360,69 @@ class EvaluationEngine:
         row["Fit_Seconds"] = time.time() - started
         return row
 
+    def _evidence_files(self, spec: PipelineSpec) -> Dict[str, Path]:
+        return {
+            "cv": self.output_dir / "predictions" / f"{spec.pipeline_id}_cv.csv",
+            "fold_metadata": self.output_dir / "fold_metadata" / f"{spec.pipeline_id}.json",
+            "val": self.output_dir / "predictions" / f"{spec.pipeline_id}_val.csv",
+        }
+
+    def _evidence_marker(self, spec: PipelineSpec) -> Path:
+        return self.output_dir / "predictions" / f"{spec.pipeline_id}_provenance.json"
+
+    def _write_evidence_marker(self, run_id: str, spec: PipelineSpec, row: Dict[str, object]) -> None:
+        hashes = {
+            name: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            for name, path in self._evidence_files(spec).items()
+        }
+        self._evidence_marker(spec).write_text(json.dumps({
+            "run_id": run_id, "pipeline_id": spec.pipeline_id,
+            "dataset_fingerprint": self.split.fingerprint,
+            "evaluation_revision": EVALUATION_REVISION,
+            "validation_status": row["Val_Status"], "file_sha256": hashes,
+        }, indent=2), encoding="utf-8")
+
+    def _evidence_matches(self, run_id: str, spec: PipelineSpec, row: Dict[str, object]) -> bool:
+        # Failures have no successful evidence to reuse; keep their explicit cached state.
+        if row.get("Status") != RunStatus.SUCCESS.value:
+            return True
+        try:
+            marker = json.loads(self._evidence_marker(spec).read_text(encoding="utf-8"))
+            if not isinstance(marker, dict) or not isinstance(marker.get("file_sha256"), dict):
+                return False
+            if (marker.get("run_id") != run_id
+                or marker.get("pipeline_id") != spec.pipeline_id
+                or marker.get("dataset_fingerprint") != self.split.fingerprint
+                or marker.get("evaluation_revision") != EVALUATION_REVISION
+                or marker.get("validation_status") != row.get("Val_Status")):
+                return False
+            files = self._evidence_files(spec)
+            for name, path in files.items():
+                expected = marker["file_sha256"].get(name)
+                if name in {"cv", "fold_metadata"} and expected is None:
+                    return False
+                if name == "val" and row.get("Val_Status") == "SUCCESS" and expected is None:
+                    return False
+                actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+                if actual != expected:
+                    return False
+            return True
+        except (OSError, ValueError, TypeError):
+            return False
+
     def evaluate_one(self, run_id: str, spec: PipelineSpec) -> Dict[str, object]:
         row = self._base_row(run_id, spec)
         started = time.time()
         phase = RunStatus.FAILED_OUTER_CV
         try:
+            # Never leave an earlier run's per-candidate evidence under this attempt's paths.
+            for relative in (
+                f"predictions/{spec.pipeline_id}_cv.csv",
+                f"predictions/{spec.pipeline_id}_val.csv",
+                f"fold_metadata/{spec.pipeline_id}.json",
+                f"predictions/{spec.pipeline_id}_provenance.json",
+            ):
+                (self.output_dir / relative).unlink(missing_ok=True)
             oof = np.empty(len(self.y_cal), dtype=float if spec.task is TaskType.REGRESSION else int)
             oof_fold = np.zeros(len(self.y_cal), dtype=int)
             fold_values: List[float] = []
@@ -414,8 +495,20 @@ class EvaluationEngine:
             row["Hyperparameters"] = json.dumps(_jsonable(fold_best_params), sort_keys=True)
             row["Actual_Backend"] = backend_name(last_model)
 
-            row["Fit_Seconds"] = time.time() - started
+            # Apparent Cal metrics: full-calibration refit scored on calibration (not used for ranking).
+            phase = RunStatus.FAILED_MODEL_FIT
+            cal_preprocessor, cal_selector, cal_model, cal_params = self._fit_components(
+                spec, self.X_cal, self.y_cal, groups=groups
+            )
+            cal_prediction = np.asarray(
+                cal_model.predict(cal_selector.transform(cal_preprocessor.transform(self.X_cal)))
+            ).ravel()
+            add_stage_metrics(row, "Cal", compute_metrics(spec.task, self.y_cal, cal_prediction))
+            row["Hyperparameters"] = json.dumps(_jsonable({"folds": fold_best_params, "full_cal": cal_params}), sort_keys=True)
+            row["Selected_Features"] = int(len(cal_selector.get_support(indices=True)))
+            row["Actual_Backend"] = backend_name(cal_model)
 
+            phase = RunStatus.FAILED_EXPORT
             prediction_dir = self.output_dir / "predictions"
             metadata_dir = self.output_dir / "fold_metadata"
             prediction_dir.mkdir(parents=True, exist_ok=True)
@@ -437,6 +530,28 @@ class EvaluationEngine:
             (metadata_dir / f"{spec.pipeline_id}.json").write_text(
                 json.dumps(_jsonable(fold_metadata), indent=2, ensure_ascii=False), encoding="utf-8"
             )
+            # Persist calibration CV evidence before report-only internal holdout evaluation.
+            # A holdout failure must not determine eligibility for CV-based ranking.
+            row["Val_Evaluated"] = True
+            try:
+                self._check_validation_labels()
+                val_prediction = np.asarray(
+                    cal_model.predict(cal_selector.transform(cal_preprocessor.transform(self.X_validation)))
+                ).ravel()
+                val_metrics = compute_metrics(spec.task, self.y_validation, val_prediction)
+                self._validation_frame(val_prediction, "Val_Predicted").to_csv(
+                    prediction_dir / f"{spec.pipeline_id}_val.csv", index=False, encoding="utf-8-sig"
+                )
+                add_stage_metrics(row, "Val", val_metrics)
+                row["Val_Status"] = "SUCCESS"
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                row["Val_Status"] = RunStatus.FAILED_VALIDATION.value
+                row["Val_Error"] = f"{type(exc).__name__}: {exc}"
+                self.logger(f"HOLDOUT FAILED {spec.pipeline_id}: {row['Val_Error']}")
+            self._write_evidence_marker(run_id, spec, row)
+            row["Fit_Seconds"] = time.time() - started
             return row
         except InterruptedError as exc:
             return self._failure_row(row, RunStatus.STOPPED, exc, started)
@@ -445,226 +560,254 @@ class EvaluationEngine:
         except Exception as exc:
             return self._failure_row(row, phase, exc, started)
 
-    def evaluate_final_metrics(self, spec: PipelineSpec) -> Dict[str, object]:
-        """Refit one ranked pipeline on all calibration data and report Cal/Val metrics.
-
-        This method runs only after Selection_Rank has been fixed. Its return
-        values never change ranking eligibility, Selection_Score, or Selection_Rank.
-        """
-        started = time.time()
-        updates: Dict[str, object] = {
-            "Val_Evaluated": True,
-            "Val_Status": "NOT_EVALUATED",
-            "Val_Error": "",
-        }
-        groups = np.asarray(self.split.groups_cal) if self.split.groups_cal is not None else None
-        try:
-            preprocessor, selector, model, best_params = self._fit_components(
-                spec, self.X_cal, self.y_cal, groups=groups
+    def _validation_frame(self, prediction, prediction_column="Predicted") -> pd.DataFrame:
+        frame = pd.DataFrame({
+            "Sample name": self.split.sample_validation,
+            "Observed": self.y_validation,
+            prediction_column: prediction,
+        })
+        if self.split.groups_validation is not None:
+            frame["Group"] = np.asarray(self.split.groups_validation).astype(str)
+        if self.label_encoder is not None:
+            frame["Observed_Label"] = self.label_encoder.inverse_transform(self.y_validation.astype(int))
+            frame[prediction_column + "_Label"] = self.label_encoder.inverse_transform(
+                np.asarray(prediction).astype(int)
             )
-            cal_prediction = np.asarray(
-                model.predict(selector.transform(preprocessor.transform(self.X_cal)))
-            ).ravel()
-            val_prediction = np.asarray(
+        return frame
+
+    def _check_validation_labels(self) -> None:
+        if self._validation_label_error is not None:
+            raise ValueError(self._validation_label_error)
+
+    @staticmethod
+    def _eligible_candidates(ranked: pd.DataFrame) -> pd.DataFrame:
+        required = {"Pipeline_ID", "Status", "Eligible_For_Ranking", "Selection_Rank"}
+        if not required.issubset(ranked.columns):
+            raise ValueError("Candidate table is missing required result columns.")
+        eligibility = ranked["Eligible_For_Ranking"].map(
+            lambda value: str(value).lower() in {"true", "1"}
+        )
+        return ranked.loc[
+            ranked["Status"].eq(RunStatus.SUCCESS.value)
+            & eligibility & ranked["Selection_Rank"].notna()
+        ].copy()
+
+    def export_candidate(
+        self,
+        ranked: pd.DataFrame,
+        specs: Sequence[PipelineSpec],
+        pipeline_id: Optional[str] = None,
+        metric: Optional[str] = None,
+        higher_is_better: Optional[bool] = None,
+        output_dir: Optional[str | Path] = None,
+        selection_reason: Optional[str] = None,
+        source_manifest: Optional[Dict[str, object]] = None,
+    ) -> CandidateExport:
+        """Refit a stored eligible candidate; do not rerun CV or alter its stored ranking.
+
+        Selection may use an exact pipeline ID or a calibration CV metric. Viewing
+        holdout results before choosing a candidate compromises confirmatory use.
+        The metric table and specs must belong to the same verified dataset/run.
+        """
+        if pipeline_id is not None and metric is not None:
+            raise ValueError("Choose a pipeline ID or a CV metric, not both.")
+        if higher_is_better is not None and metric is None:
+            raise ValueError("A metric is required when specifying its direction.")
+        specs = list(specs)
+        expected_run = self._run_id(specs)
+        if source_manifest is not None:
+            if source_manifest.get("dataset_fingerprint") != self.split.fingerprint:
+                raise ValueError("Source manifest dataset fingerprint does not match current data.")
+            manifest_ids = [item.get("pipeline_id") for item in source_manifest.get("pipeline_specs", [])]
+            if manifest_ids != [spec.pipeline_id for spec in specs]:
+                raise ValueError("Source manifest pipeline specifications do not match the supplied library.")
+            expected_run = str(source_manifest.get("run_id", ""))
+            accepted_runs = {self._run_id(specs), self._run_id(specs, include_revision=False)}
+            if expected_run not in accepted_runs:
+                raise ValueError("Source manifest does not match the current scientific configuration.")
+        if "Run_ID" not in ranked or not ranked["Run_ID"].eq(expected_run).all():
+            raise ValueError("Candidate results do not match the verified dataset/configuration/run.")
+        candidates = self._eligible_candidates(ranked)
+        if candidates.empty:
+            raise ValueError("No eligible calibration-CV candidates are available.")
+        if candidates["Pipeline_ID"].duplicated().any():
+            raise ValueError("Candidate table contains duplicate pipeline IDs.")
+        if pipeline_id is not None:
+            candidates = candidates[candidates["Pipeline_ID"].eq(pipeline_id)]
+            if candidates.empty:
+                raise ValueError(f"Unknown or ineligible pipeline ID: {pipeline_id}")
+            selection_basis = "explicit pipeline ID"
+        elif metric is not None:
+            if metric != "Selection_Score" and not metric.startswith("CV_"):
+                raise ValueError("Selection metric must be Selection_Score or a CV_* metric.")
+            if metric not in candidates.columns:
+                raise ValueError(f"Unknown selection metric: {metric}")
+            metric_values = pd.to_numeric(candidates[metric], errors="coerce")
+            candidates = candidates.loc[np.isfinite(metric_values)].copy()
+            if candidates.empty:
+                raise ValueError(f"No finite values are available for {metric}.")
+            candidates[metric] = metric_values.loc[candidates.index]
+            if higher_is_better is None:
+                lower_metrics = {"CV_RMSE", "CV_MAE", "CV_LogLoss"}
+                higher_metrics = {
+                    "Selection_Score", "CV_Accuracy", "CV_Balanced_Accuracy",
+                    "CV_MCC", "CV_Kappa", "CV_Macro_F1", "CV_Sensitivity",
+                    "CV_Specificity", "CV_R2", "CV_RPD", "CV_RPIQ", "CV_RER",
+                }
+                if metric in lower_metrics:
+                    higher_is_better = False
+                elif metric in higher_metrics:
+                    higher_is_better = True
+                else:
+                    raise ValueError(f"Specify higher/lower direction explicitly for {metric}.")
+            candidates = candidates.sort_values(
+                [metric, "Selection_Rank", "Pipeline_ID"],
+                ascending=[not higher_is_better, True, True], kind="mergesort",
+            )
+            selection_basis = "calibration CV metric" if metric.startswith("CV_") else "configured composite score"
+        else:
+            candidates = candidates.sort_values(["Selection_Rank", "Pipeline_ID"], kind="mergesort")
+            selection_basis = "configured composite-score ordering (default example)"
+        selected = candidates.iloc[0]
+        selected_id = str(selected["Pipeline_ID"])
+        matches = [spec for spec in specs if spec.pipeline_id == selected_id]
+        if len(matches) != 1 or matches[0].task is not self.config.task:
+            raise ValueError("Selected pipeline does not match exactly one specification for this task.")
+        spec = matches[0]
+        groups = None if self.split.groups_cal is None else np.asarray(self.split.groups_cal)
+        preprocessor, selector, model, params = self._fit_components(
+            spec, self.X_cal, self.y_cal, groups=groups
+        )
+        calibration_prediction = np.asarray(
+            model.predict(selector.transform(preprocessor.transform(self.X_cal)))
+        ).ravel()
+        calibration_metrics = compute_metrics(spec.task, self.y_cal, calibration_prediction)
+        names = selector.get_feature_names_out(self.feature_names).tolist()
+        bundle = FinalPipelineBundle(
+            task=spec.task, spec=spec.to_dict(), preprocessor=preprocessor,
+            selector=selector, model=model, feature_names=self.feature_names,
+            selected_feature_names=names, dataset_fingerprint=self.split.fingerprint,
+            label_encoder=self.label_encoder,
+        )
+        base = Path(output_dir) if output_dir is not None else self.output_dir / "exports"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        export_dir = base / f"{selected_id}_{stamp}"
+        export_dir.mkdir(parents=True, exist_ok=False)
+        # Preserve a usable calibration-fitted model even if holdout prediction fails.
+        bundle_path = save_bundle(bundle, export_dir / "pipeline.joblib")
+        validation_path = None
+        validation_metrics = {}
+        validation_status = "SUCCESS"
+        validation_error = ""
+        try:
+            self._check_validation_labels()
+            prediction = np.asarray(
                 model.predict(selector.transform(preprocessor.transform(self.X_validation)))
             ).ravel()
-            add_stage_metrics(updates, "Cal", compute_metrics(spec.task, self.y_cal, cal_prediction))
-            add_stage_metrics(updates, "Val", compute_metrics(spec.task, self.y_validation, val_prediction))
-            updates.update(
-                {
-                    "Val_Status": "SUCCESS",
-                    "Selected_Features": int(len(selector.get_support(indices=True))),
-                    "Actual_Backend": backend_name(model),
-                    "_Full_Cal_Hyperparameters": best_params,
-                    "_Final_Fit_Seconds": time.time() - started,
-                }
-            )
-
-            prediction_dir = self.output_dir / "predictions"
-            prediction_dir.mkdir(parents=True, exist_ok=True)
-            val_frame = pd.DataFrame(
-                {
-                    "Sample name": self.split.sample_validation,
-                    "Observed": self.y_validation,
-                    "Val_Predicted": val_prediction,
-                }
-            )
-            if self.split.groups_validation is not None:
-                val_frame["Group"] = self.split.groups_validation.astype(str)
-            if self.label_encoder is not None:
-                val_frame["Observed_Label"] = self.label_encoder.inverse_transform(self.y_validation.astype(int))
-                val_frame["Val_Predicted_Label"] = self.label_encoder.inverse_transform(val_prediction.astype(int))
-            val_frame.to_csv(
-                prediction_dir / f"{spec.pipeline_id}_val.csv",
-                index=False,
-                encoding="utf-8-sig",
-            )
+            metrics = compute_metrics(spec.task, self.y_validation, prediction)
+            path = export_dir / "internal_holdout_predictions.csv"
+            self._validation_frame(prediction).to_csv(path, index=False, encoding="utf-8-sig")
+            validation_path = path
+            validation_metrics = metrics
         except Exception as exc:
-            updates["Val_Status"] = RunStatus.FAILED_VALIDATION.value
-            updates["Val_Error"] = f"{type(exc).__name__}: {exc}"
-            updates["_Final_Fit_Seconds"] = time.time() - started
-        return updates
-
-    def _run_final_metrics(
-        self,
-        ranked: pd.DataFrame,
-        specs: Sequence[PipelineSpec],
-        run_id: str,
-    ) -> pd.DataFrame:
-        """Add Cal/Val results after ranking without changing the frozen rank."""
-        result = ranked.copy()
-        spec_by_id = {spec.pipeline_id: spec for spec in specs}
-        pending: List[Tuple[int, PipelineSpec]] = []
-        for row_index, row in result.iterrows():
-            if not bool(row.get("Eligible_For_Ranking")) or pd.isna(row.get("Selection_Rank")):
-                continue
-            if bool(row.get("Val_Evaluated")):
-                continue
-            pipeline_id = str(row["Pipeline_ID"])
-            pending.append((row_index, spec_by_id[pipeline_id]))
-
-        def apply_updates(row_index: int, spec: PipelineSpec, updates: Dict[str, object]) -> None:
-            full_cal_params = updates.pop("_Full_Cal_Hyperparameters", None)
-            final_seconds = float(updates.pop("_Final_Fit_Seconds", 0.0) or 0.0)
-            for key, value in updates.items():
-                if key in result.columns:
-                    result.at[row_index, key] = value
-            if full_cal_params is not None:
-                try:
-                    fold_params = json.loads(str(result.at[row_index, "Hyperparameters"]))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    fold_params = []
-                result.at[row_index, "Hyperparameters"] = json.dumps(
-                    _jsonable({"folds": fold_params, "full_cal": full_cal_params}),
-                    sort_keys=True,
-                )
-            prior_seconds = pd.to_numeric(pd.Series([result.at[row_index, "Fit_Seconds"]]), errors="coerce").iloc[0]
-            result.at[row_index, "Fit_Seconds"] = (float(prior_seconds) if np.isfinite(prior_seconds) else 0.0) + final_seconds
-            self.checkpoint.put(run_id, spec, _jsonable(result.loc[row_index].to_dict()))
-
-        workers = min(self.config.resolved_n_jobs, max(1, len(pending)))
-        if workers == 1:
-            for completed, (row_index, spec) in enumerate(pending, 1):
-                updates = self.evaluate_final_metrics(spec)
-                apply_updates(row_index, spec, updates)
-                self.logger(f"VALIDATION {completed}/{len(pending)}: {spec.preprocessing} / {spec.selector} / {spec.model}")
-        elif pending:
-            futures = {}
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                for row_index, spec in pending:
-                    future = executor.submit(_evaluate_final_metrics_worker, self.split, self.config, spec)
-                    futures[future] = (row_index, spec)
-                completed = 0
-                while futures:
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        row_index, spec = futures.pop(future)
-                        apply_updates(row_index, spec, future.result())
-                        completed += 1
-                        self.logger(
-                            f"VALIDATION {completed}/{len(pending)}: {spec.preprocessing} / {spec.selector} / {spec.model}"
-                        )
-        return result
+            validation_status = RunStatus.FAILED_VALIDATION.value
+            validation_error = f"{type(exc).__name__}: {exc}"
+            self.logger(f"HOLDOUT FAILED {selected_id}: {validation_error}")
+        manifest_path = write_manifest(export_dir / "export_manifest.json", _jsonable({
+            "pipeline_id": selected_id,
+            "pipeline_spec": spec.to_dict(),
+            "dataset_fingerprint": self.split.fingerprint,
+            "source_run_id": selected.get("Run_ID"),
+            "source_evaluation_revision": (
+                source_manifest.get("evaluation_revision", "legacy working-tree implementation")
+                if source_manifest is not None else EVALUATION_REVISION
+            ),
+            "evaluation_revision": EVALUATION_REVISION,
+            "selection_basis": selection_basis,
+            "selection_metric": metric,
+            "higher_is_better": higher_is_better,
+            "selection_reason": selection_reason or selection_basis,
+            "stored_selection_rank": selected.get("Selection_Rank"),
+            "stored_selection_score": selected.get("Selection_Score"),
+            "stored_cv_metrics": {key: selected[key] for key in selected.index if key.startswith("CV_")},
+            "cv_recomputed": False,
+            "refit_role": "full-calibration fit of the selected candidate",
+            "config": self.config.to_dict(),
+            "calibration_observations": len(self.y_cal),
+            "internal_holdout_observations": len(self.y_validation),
+            "calibration_groups": None if groups is None else len(set(map(str, groups))),
+            "internal_holdout_groups": None if self.split.groups_validation is None else int(pd.Series(self.split.groups_validation).nunique()),
+            "calibration_metrics": calibration_metrics,
+            "internal_holdout_metrics": validation_metrics,
+            "validation_status": validation_status,
+            "validation_error": validation_error,
+            "validation_role": "same-source internal holdout; report-only, not used by automatic CV ranking",
+            "selection_limit": "candidate CV is not an unbiased estimate of selecting from the entire library; repeated use of holdout results for choice is exploratory",
+            "selected_features": names,
+            "hyperparameters": params,
+            "actual_backend": backend_name(model),
+            "bundle_path": str(bundle_path),
+            "validation_predictions": validation_path,
+        }))
+        return CandidateExport(
+            selected_id, bundle_path, manifest_path, validation_path, validation_status,
+            validation_error, calibration_metrics, validation_metrics, names, params,
+            backend_name(model),
+        )
 
     def _finalize_rank_one(
-        self,
-        ranked: pd.DataFrame,
-        specs: Sequence[PipelineSpec],
+        self, ranked: pd.DataFrame, specs: Sequence[PipelineSpec],
     ) -> Tuple[pd.DataFrame, Optional[Path], Optional[Path]]:
-        """Export Rank 1 and refresh its Cal/Val metrics from the saved final fit.
-
-        Every successful pipeline already carries report-only Val_* metrics;
-        ranking was fixed previously using CV_* only.
-        """
+        """Export a score-ordered default example with legacy filename aliases."""
         result = ranked.copy()
-        successful = result[
-            result["Eligible_For_Ranking"].astype(bool) & result["Selection_Rank"].notna()
-        ]
-        if successful.empty:
-            return result, None, None
-        row_index = successful["Selection_Rank"].astype(float).idxmin()
-        best_id = str(result.loc[row_index, "Pipeline_ID"])
-        spec = next(item for item in specs if item.pipeline_id == best_id)
-        groups = np.asarray(self.split.groups_cal) if self.split.groups_cal is not None else None
         try:
-            preprocessor, selector, model, best_params = self._fit_components(
-                spec, self.X_cal, self.y_cal, groups=groups
-            )
-            X_validation_selected = selector.transform(preprocessor.transform(self.X_validation))
-            prediction = np.asarray(model.predict(X_validation_selected)).ravel()
-            for name, value in compute_metrics(spec.task, self.y_validation, prediction).items():
-                result.loc[row_index, f"Val_{name}"] = value
-            # Refresh Cal metrics from the same final refit used for validation.
-            cal_prediction = np.asarray(
-                model.predict(selector.transform(preprocessor.transform(self.X_cal)))
-            ).ravel()
-            for name, value in compute_metrics(spec.task, self.y_cal, cal_prediction).items():
-                result.loc[row_index, f"Cal_{name}"] = value
+            for name in (
+                f"best_{self.config.task.value}_pipeline.joblib",
+                "rank1_validation_predictions.csv", "rank1_final_refit.json",
+            ):
+                (self.output_dir / name).unlink(missing_ok=True)
+            if self._eligible_candidates(result).empty:
+                return result, None, None
+            exported = self.export_candidate(result, specs)
+            row_index = result.index[result["Pipeline_ID"].eq(exported.pipeline_id)][0]
+            for prefix, metrics in (("Cal", exported.calibration_metrics), ("Val", exported.validation_metrics)):
+                for name, value in metrics.items():
+                    result.loc[row_index, f"{prefix}_{name}"] = value
+            if exported.validation_status != "SUCCESS":
+                for column in result.columns:
+                    if column.startswith("Val_") and column not in {"Val_Status", "Val_Error", "Val_Evaluated"}:
+                        result.loc[row_index, column] = np.nan
             result.loc[row_index, "Val_Evaluated"] = True
-            result.loc[row_index, "Val_Status"] = "SUCCESS"
-            result.loc[row_index, "Val_Error"] = ""
-            result.loc[row_index, "Selected_Features"] = int(len(selector.get_support(indices=True)))
-            try:
-                recorded = json.loads(str(result.loc[row_index, "Hyperparameters"]))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                recorded = []
-            fold_params = recorded.get("folds", []) if isinstance(recorded, dict) else recorded
-            result.loc[row_index, "Hyperparameters"] = json.dumps(
-                _jsonable({"folds": fold_params, "full_cal": best_params}),
-                sort_keys=True,
-            )
-            result.loc[row_index, "Actual_Backend"] = backend_name(model)
-
-            validation_frame = pd.DataFrame(
-                {
-                    "Sample name": self.split.sample_validation,
-                    "Observed": self.y_validation,
-                    "Predicted": prediction,
-                }
-            )
-            if self.split.groups_validation is not None:
-                validation_frame["Group"] = self.split.groups_validation.astype(str)
-            if self.label_encoder is not None:
-                validation_frame["Observed_Label"] = self.label_encoder.inverse_transform(
-                    self.y_validation.astype(int)
-                )
-                validation_frame["Predicted_Label"] = self.label_encoder.inverse_transform(
-                    prediction.astype(int)
-                )
+            result.loc[row_index, "Val_Status"] = exported.validation_status
+            result.loc[row_index, "Val_Error"] = exported.validation_error
+            result.loc[row_index, "Selected_Features"] = len(exported.selected_feature_names)
+            result.loc[row_index, "Hyperparameters"] = json.dumps(_jsonable(exported.hyperparameters), sort_keys=True)
+            result.loc[row_index, "Actual_Backend"] = exported.actual_backend
+            # Older clients use these paths. "best" and "rank1" denote score order only.
+            bundle_path = self.output_dir / f"best_{self.config.task.value}_pipeline.joblib"
+            shutil.copy2(exported.bundle_path, bundle_path)
             validation_path = self.output_dir / "rank1_validation_predictions.csv"
-            validation_frame.to_csv(validation_path, index=False, encoding="utf-8-sig")
-
-            selected_names = selector.get_feature_names_out(self.feature_names).tolist()
-            bundle = FinalPipelineBundle(
-                task=spec.task,
-                spec=spec.to_dict(),
-                preprocessor=preprocessor,
-                selector=selector,
-                model=model,
-                feature_names=self.feature_names,
-                selected_feature_names=selected_names,
-                dataset_fingerprint=self.split.fingerprint,
-                label_encoder=self.label_encoder,
-            )
-            bundle_path = save_bundle(
-                bundle, self.output_dir / f"best_{spec.task.value}_pipeline.joblib"
-            )
-            write_manifest(
-                self.output_dir / "rank1_final_refit.json",
-                {
-                    "pipeline_id": best_id,
-                    "selection_rank": 1,
-                    "selection_basis": "calibration-set two-level cross-validation only (shown as CV metrics)",
-                    "validation_role": "independent Val_* reported for all successfully ranked pipelines; Rank 1 bundle exported here",
-                    "selected_features": selected_names,
-                    "hyperparameters": best_params,
-                },
-            )
+            if exported.validation_predictions is not None:
+                shutil.copy2(exported.validation_predictions, validation_path)
+            else:
+                validation_path.unlink(missing_ok=True)
+                validation_path = None
+            write_manifest(self.output_dir / "rank1_final_refit.json", {
+                "pipeline_id": exported.pipeline_id,
+                "selection_rank": 1,
+                "selection_basis": "configured CV-based composite score; default illustrative candidate",
+                "validation_role": "same-source internal holdout; report-only",
+                "validation_status": exported.validation_status,
+                "validation_error": exported.validation_error,
+                "selected_features": exported.selected_feature_names,
+                "hyperparameters": exported.hyperparameters,
+                "export_manifest": str(exported.manifest_path),
+                "legacy_filename_note": "rank1 and best are retained for compatibility, not a claim of unbiased superiority",
+            })
             return result, bundle_path, validation_path
         except Exception as exc:
-            result.loc[row_index, "Val_Evaluated"] = True
-            result.loc[row_index, "Val_Status"] = RunStatus.FAILED_VALIDATION.value
-            result.loc[row_index, "Val_Error"] = f"{type(exc).__name__}: {exc}"
+            self.logger(f"DEFAULT EXPORT FAILED: {type(exc).__name__}: {exc}")
+            # Export or calibration-refit failure is not a holdout-prediction failure.
             return result, None, None
 
     def run(
@@ -677,6 +820,8 @@ class EvaluationEngine:
             raise ValueError("At least one pipeline specification is required.")
         if any(spec.task is not self.config.task for spec in specs):
             raise ValueError("All pipeline specifications must match RunConfig.task.")
+        if len({spec.pipeline_id for spec in specs}) != len(specs):
+            raise ValueError("Pipeline specifications must have unique IDs.")
         run_id = self._run_id(specs)
         rows_by_index: Dict[int, Dict[str, object]] = {}
         total = len(specs)
@@ -684,6 +829,9 @@ class EvaluationEngine:
         completed = 0
         for index, spec in enumerate(specs):
             cached = self.checkpoint.get(run_id, spec.pipeline_id) if self.config.resume else None
+            if cached is not None and not self._evidence_matches(run_id, spec, cached):
+                self.logger(f"RECOMPUTE {spec.pipeline_id}: stored prediction/fold evidence is missing or belongs to another run")
+                cached = None
             if cached is not None:
                 rows_by_index[index] = cached
                 completed += 1
@@ -742,38 +890,46 @@ class EvaluationEngine:
 
         frame = pd.DataFrame(rows, columns=result_columns(self.config.task))
         ranked = rank_results(frame, self.config.task)
-        ranked = self._run_final_metrics(ranked, specs, run_id)
         ranked, best_pipeline, validation_predictions = self._finalize_rank_one(ranked, specs)
         ranked = add_overfit_diagnostics(ranked, self.config.task)
         ranked = reorder_leaderboard_columns(ranked, self.config.task)
-        results_csv = self.output_dir / "pipeline_results.csv"
-        leaderboard_csv = self.output_dir / "leaderboard.csv"
-        html_path = self.output_dir / "leaderboard.html"
+        results_csv = self.output_dir / "pipeline_results_v3.csv"
+        leaderboard_csv = self.output_dir / "leaderboard_v3.csv"
+        html_path = self.output_dir / "leaderboard_v3.html"
         ranked.to_csv(results_csv, index=False, encoding="utf-8-sig")
         ranked.to_csv(leaderboard_csv, index=False, encoding="utf-8-sig")
+        if self.config.legacy_export:
+            add_legacy_validation_aliases(ranked).to_csv(
+                self.output_dir / "pipeline_results_v2_compatibility.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
         write_leaderboard_html(ranked, html_path, self.config.task)
-        validation_attempted = ranked["Val_Evaluated"].astype(bool)
-        validation_successful = validation_attempted & ranked["Val_Status"].eq("SUCCESS")
-        validation_failed_rows = validation_attempted & ~ranked["Val_Status"].eq("SUCCESS")
         manifest_path = write_manifest(
             self.output_dir / "run_manifest.json",
             {
                 "run_id": run_id,
+                "evaluation_revision": EVALUATION_REVISION,
                 "config": self.config.to_dict(),
                 "dataset_fingerprint": self.split.fingerprint,
                 "calibration_samples": self.split.sample_cal.tolist(),
                 "validation_samples": self.split.sample_validation.tolist(),
+                "calibration_observations": len(self.y_cal),
+                "internal_holdout_observations": len(self.y_validation),
+                "calibration_groups": None if self.split.groups_cal is None else int(pd.Series(self.split.groups_cal).nunique()),
+                "internal_holdout_groups": None if self.split.groups_validation is None else int(pd.Series(self.split.groups_validation).nunique()),
                 "pipeline_specs": [spec.to_dict() for spec in specs],
                 "successful": int(ranked["Status"].eq(RunStatus.SUCCESS.value).sum()),
                 "failed": int((~ranked["Status"].eq(RunStatus.SUCCESS.value)).sum()),
-                "validation_successful": int(validation_successful.sum()),
-                "validation_failed": int(validation_failed_rows.sum()),
                 "best_pipeline": str(best_pipeline) if best_pipeline else None,
+                "default_pipeline": str(best_pipeline) if best_pipeline else None,
+                "internal_holdout_failures": int(ranked["Val_Status"].eq(RunStatus.FAILED_VALIDATION.value).sum()),
+                "default_export_failed": bool(self._eligible_candidates(ranked).shape[0] and best_pipeline is None),
                 "validation_predictions": str(validation_predictions) if validation_predictions else None,
-                "selection_role": "ranking uses calibration-set two-level cross-validation only (metrics shown as CV_*)",
-                "validation_role": "independent Val_* is added after ranks are frozen and cannot change Selection_Rank; Rank 1 also exports a bundle and rank1_validation_predictions.csv",
+                "selection_role": "candidate-level calibration CV orders the configured library; the first row is a default example, not an unbiased estimate of library selection",
+                "validation_role": "same-source internal holdout Val_* attempted per candidate before aggregate ranking; report-only; failure preserves CV eligibility; default example exported with legacy filenames",
                 "calibration_role": "full-calibration apparent metrics shown as Cal_* and not used for ranking",
-                "training_subset_contract": "imputation, preprocessing and variable selection are refitted using every inner training subset before hyperparameter scoring",
+                "inner_cv_contract": "model tuning refits preprocessing and selection on inner-training folds; SG parameters are searched on the outer-training subset and held fixed during subsequent tuning; selector fitness sees outer-training preprocessing; no whole-library external resampling loop",
             },
         )
         failures = ranked[~ranked["Status"].eq(RunStatus.SUCCESS.value)]
@@ -781,14 +937,15 @@ class EvaluationEngine:
             ranked["Eligible_For_Ranking"].astype(bool)
             & ranked["Selection_Score"].isna()
         ]
-        validation_failed = ranked.loc[ranked["Selection_Rank"].eq(1), "Val_Status"].ne("SUCCESS").any()
+        validation_failed = ranked["Val_Status"].eq(RunStatus.FAILED_VALIDATION.value).any()
+        export_failed = not self._eligible_candidates(ranked).empty and best_pipeline is None
         if self.config.strict and (
-            not failures.empty or not eligible_missing.empty or len(rows) != total or validation_failed
+            not failures.empty or not eligible_missing.empty or len(rows) != total or validation_failed or export_failed
         ):
             raise RuntimeError(
                 f"Strict run failed: {len(failures)} failed pipelines, "
                 f"{len(eligible_missing)} eligible rows with missing scores, "
-                f"validation_failed={validation_failed}, {len(rows)}/{total} completed."
+                f"validation_failed={validation_failed}, export_failed={export_failed}, {len(rows)}/{total} completed."
             )
         return RunOutputs(
             ranked,

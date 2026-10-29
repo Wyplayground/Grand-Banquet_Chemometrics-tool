@@ -1,61 +1,15 @@
 # Grand Banquet Classification User Guide
 
-## Workflow
+Load data with `Sample name`, `Class`, and numeric predictors. Supply `Group` for repeated or matched observations and `Split` for a documented calibration/internal-holdout partition. Group labels are not automatically verified physical specimens. Choose Exploration, Standard (default), or Full, then select methods and CV settings.
 
-1. In **Data Loading**, select a CSV/XLSX/XLS file and project directory. Choose Exploration (reduced settings), Standard, or Full mode.
-2. Load and split the data. Confirm the displayed calibration and independent-validation sample counts.
-3. Select preprocessing methods. Imputation and learned preprocessing parameters are fitted using each cross-validation training subset only.
-4. Select variable-selection methods. VIP, GA, iPLS, CARS, and SFLA use only the class labels available in the applicable training subset.
-5. Select classification models and the outer/inner cross-validation counts, then start training.
-6. Review `Selection_Rank`, `Selection_Score`, Cal/CV/Val metrics, stability, selected variables, backend, and failures in **Results Analysis**.
-7. Generate plots, export results, load the saved Rank 1 pipeline, predict new samples, or optionally create a Qwen scientific summary.
+The full library is 15 preprocessing × 6 selection × 11 classification model structures, giving 990 candidates. Actual candidate counts depend on the selected methods. Full expands finite tuning grids; use **Select All Options** to select the entire structural library. It does not exhaust all chemometric choices. The outer candidate CV keeps its held-out labels outside component fitting. Model-grid scoring refits preprocessing and selection on each inner-training subset. SG selection and selector fitness have sequential/internal limits described in root `METHODS.md`; the software does not promise every internal score is leakage-proof.
 
-## Input
+Results report `Cal_*` (apparent full-calibration), `CV_*` (candidate calibration CV) and `Val_*` (internal holdout) Accuracy, Balanced Accuracy, Kappa, MCC, Macro-F1, Sensitivity and Specificity. Per-candidate Cal/Val evaluation occurs before aggregate sorting. Holdout failures are recorded separately in `Val_Status` / `Val_Error` and do not erase successful CV evidence.
 
-Required columns:
+`Selection_Score` / `Selection_Rank` define the default CV-based display order. Inspect the full table and choose criteria appropriate to the task. A high default score does not prove a universally best classifier; selecting from the same CV results may produce optimism. Holdout metrics never enter the default score. If you choose after viewing `Val_*`, record that additional selection and do not describe that holdout as untouched evaluation.
 
-- `Sample name`: row identifier.
-- `Class`: categorical response.
-- Numeric predictor columns.
+Use **Export Candidate** to select a Pipeline ID or supported CV metric and enter the selection reason. Direction can be `auto` for recognized metrics or explicitly set to `higher` or `lower`; other numeric CV metrics require an explicit direction. This refits the chosen candidate and retains decision/refit evidence; it does not rerun the complete library. Automatic `best_classification_pipeline.joblib` and `rank1` artifacts describe the first eligible candidate in the default CV order.
 
-Optional columns:
+Use **Load Pipeline / Predict New Data** to reuse a bundle. New data must contain every original input predictor column recorded in the bundle, including variables excluded by selection. The GUI and CLI select and reorder these columns by name, so sample identifiers and other metadata columns may remain in the input file. The fitted preprocessor, selector, classifier and label encoder are reused. Retain the bundle and its manifests, source hashes and decision evidence together.
 
-- `Group`: assigns repeated or matched observations to one independent group. A group is never divided across calibration, validation, or cross-validation held-out subsets.
-- `Split`: accepts `calibration`, `cal`, `train`, or `training` for calibration and `validation`, `val`, or `test` for independent validation. Without this column, GB creates the split from the selected ratio and seed.
-
-## Evaluation modes
-
-- **Exploration** uses reduced variable-selection budgets, fixed SG settings, and fixed model settings.
-- **Standard** uses full variable-selection budgets, searches SG settings, and applies medium model grids.
-- **Full** uses full variable-selection budgets, searches SG settings, and applies the expanded model grids documented in the root `to_the_user.md`.
-
-## Result interpretation
-
-- `Cal_*`: apparent performance after fitting all calibration observations; not used for ranking.
-- `CV_*`: calibration-set two-level cross-validation performance; the ranking basis.
-- `Selection_Score`: weighted percentile score based on CV Kappa, MCC, Macro-F1, Balanced Accuracy, and stability.
-- `Selection_Rank`: candidate order fixed before validation is evaluated.
-- `Val_*`: performance on the predefined independent-validation observations; descriptive only and unable to change the rank.
-- `Overfit_*`: Cal/CV/Val diagnostic differences; not used for ranking.
-
-Classification metrics are Accuracy, Balanced Accuracy, Kappa, MCC, Macro-F1, Sensitivity, and Specificity.
-
-Rows that fail before a valid `CV_*` result have `Eligible_For_Ranking=False`. A later validation problem is recorded in `Val_Status` and `Val_Error` while the previously assigned rank remains unchanged.
-
-## Saved pipeline and prediction
-
-`best_classification_pipeline.joblib` contains the fitted preprocessor, selector, classifier, label encoder, feature schema, parameters, software/schema versions, and dataset fingerprint.
-
-New data must contain the same predictor names as the saved bundle. Use **Load Pipeline / Predict New Data** in Results Analysis or:
-
-```powershell
-python classification\grand_banquet_classification.py --predict-model classification_output\best_classification_pipeline.joblib --predict-data new_samples.csv
-```
-
-The saved preprocessing and selector are applied directly; variable selection is not rerun.
-
-## Outputs and scientific summary
-
-The project directory contains `pipeline_results.csv`, `leaderboard.csv`, `leaderboard.html`, prediction files, fold metadata, manifests, plots, and the Rank 1 bundle. Together, these files form the Reproducible Analysis Record.
-
-The optional Qwen function receives a structured summary of the results. It is instructed to distinguish CV-based ranking from later validation and not to re-rank candidates using `Val_*`.
+Optional **AI Report Generation** uses DeepSeek. The GUI defaults to `deepseek-flash` and offers `deepseek-v4-pro`; enter credentials in the masked field or use `DEEPSEEK_API_KEY`. The endpoint is `https://api.deepseek.com`; reporting uses `build_deepseek_prompt` / `call_deepseek`. Actual call input/prompts, request parameters, requested/returned model identities, dates and response are saved under `ai_reports/call_records` without credentials. A model alias is not an immutable version guarantee. See root `README.md` for official provider references and reporting limits.

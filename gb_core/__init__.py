@@ -5,7 +5,6 @@ from .contracts import (
     PREPROCESSING_METHODS,
     REGRESSION_MODELS,
     SELECTOR_METHODS,
-    SOFTWARE_VERSION,
     EvaluationMode,
     PipelineSpec,
     RunConfig,
@@ -13,7 +12,7 @@ from .contracts import (
     TaskType,
 )
 
-__version__ = SOFTWARE_VERSION
+__version__ = "0.0.0"
 
 __all__ = [
     "TaskType",

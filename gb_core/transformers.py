@@ -51,7 +51,7 @@ def sg_param_candidates(n_features: int) -> list[tuple[int, int]]:
 
 
 class GBPreprocessor(BaseEstimator, TransformerMixin):
-    """Implementation of the 15 public Grand Banquet preprocessors."""
+    """Fold-safe implementation of the 15 public Grand Banquet preprocessors."""
 
     def __init__(
         self,

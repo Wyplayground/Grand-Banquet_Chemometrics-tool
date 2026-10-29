@@ -16,6 +16,35 @@ from .models import cv_strategy, make_model
 EPS = 1e-12
 
 
+def _pls_coefficient_importance(coefficients, n_features: int, n_targets: int) -> np.ndarray:
+    """Average absolute PLS coefficients over targets, across sklearn layouts.
+
+    Older sklearn releases expose (features, targets); current releases expose
+    (targets, features). A square multi-target array cannot identify its layout
+    from dimensions alone, so reject it rather than silently rank the wrong axis.
+    """
+    values = np.abs(np.asarray(coefficients, dtype=float))
+    if not np.isfinite(values).all():
+        raise ValueError("CARS PLS coefficients must be finite.")
+    if values.ndim == 1:
+        if n_targets != 1 or values.shape != (n_features,):
+            raise ValueError("CARS PLS coefficient vector does not match feature/target dimensions.")
+        return values
+    if values.ndim != 2:
+        raise ValueError("CARS PLS coefficients must be a vector or matrix.")
+    target_first = values.shape == (n_targets, n_features)
+    feature_first = values.shape == (n_features, n_targets)
+    if target_first and feature_first:
+        if n_features == n_targets == 1:
+            return values.ravel()
+        raise ValueError("Ambiguous square CARS PLS coefficient layout; feature and target counts coincide.")
+    if target_first:
+        return values.mean(axis=0)
+    if feature_first:
+        return values.mean(axis=1)
+    raise ValueError("CARS PLS coefficient matrix does not match feature/target dimensions.")
+
+
 def _vip_scores(X: np.ndarray, y: np.ndarray, n_components: int = 5) -> np.ndarray:
     components = max(1, min(n_components, X.shape[0] - 1, X.shape[1]))
     pls = PLSRegression(n_components=components, max_iter=1000, tol=1e-6)
@@ -33,7 +62,7 @@ def _vip_scores(X: np.ndarray, y: np.ndarray, n_components: int = 5) -> np.ndarr
 
 
 class GBSelector(BaseEstimator, TransformerMixin):
-    """Selector fitted from each cross-validation training subset."""
+    """Fold-local selector with pipeline-specific fitness where appropriate."""
 
     def __init__(
         self,
@@ -193,8 +222,8 @@ class GBSelector(BaseEstimator, TransformerMixin):
             components = max(1, min(5, row_count - 1, X.shape[1]))
             pls = PLSRegression(n_components=components, max_iter=1000, tol=1e-6)
             pls.fit(X[rows], target[rows])
-            coefficients = np.abs(np.asarray(pls.coef_))
-            importance = coefficients.mean(axis=1) if coefficients.ndim == 2 else coefficients.ravel()
+            n_targets = target.shape[1] if target.ndim == 2 else 1
+            importance = _pls_coefficient_importance(pls.coef_, X.shape[1], n_targets)
             retain_ratio = math.exp(-2.5 * run / max(runs - 1, 1))
             keep_count = max(min(5, X.shape[1]), int(round(X.shape[1] * retain_ratio)))
             candidate = np.argsort(importance)[::-1][:keep_count]

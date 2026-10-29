@@ -23,6 +23,7 @@ from .contracts import (
     REGRESSION_MODELS,
     SELECTOR_METHODS,
     EvaluationMode,
+    PipelineSpec,
     RunConfig,
     TaskType,
     enumerate_specs,
@@ -30,18 +31,7 @@ from .contracts import (
 from .data import DatasetSplit, load_dataset, split_dataset
 from .engine import EvaluationEngine, RunOutputs
 from .plotting import compare_models_plot, create_visualization_suite
-from .reporting import build_qwen_prompt, call_qwen, structured_summary, write_report_files
-
-
-QWEN_MODELS = [
-    "qwen-plus",
-    "qwen-max",
-    "qwen-turbo",
-    "qwen2.5-7b-instruct",
-    "qwen2.5-14b-instruct",
-    "qwen2.5-32b-instruct",
-    "qwen2.5-72b-instruct",
-]
+from .reporting import DEEPSEEK_MODELS, build_deepseek_prompt, call_deepseek, structured_summary, write_report_files
 
 
 class RedirectText:
@@ -85,6 +75,11 @@ class GBApplication:
         self._setup_variables()
         self.dataset_split: Optional[DatasetSplit] = None
         self.outputs: Optional[RunOutputs] = None
+        self.last_specs: List[PipelineSpec] = []
+        self.last_run_data_file: Optional[Path] = None
+        self._run_busy = False
+        self._export_busy = False
+        self._ai_busy = False
         self.stop_requested = False
         self.worker_queue: queue.Queue = queue.Queue()
         self.project_step = "Data loading"
@@ -132,7 +127,12 @@ class GBApplication:
         self.inner_folds = tk.StringVar(value="3")
         self.seed_var = tk.StringVar(value="42")
         self.api_key_var = tk.StringVar()
-        self.qwen_model_var = tk.StringVar(value="qwen-plus")
+        self.deepseek_model_var = tk.StringVar(value=DEEPSEEK_MODELS[0])
+        self.export_mode_var = tk.StringVar(value="id")
+        self.export_id_var = tk.StringVar()
+        self.export_metric_var = tk.StringVar(value="CV_MCC" if self.task is TaskType.CLASSIFICATION else "CV_RMSE")
+        self.export_direction_var = tk.StringVar(value="auto")
+        self.export_reason_var = tk.StringVar()
         self.preprocessing_vars: Dict[str, tk.BooleanVar] = {
             name: tk.BooleanVar(value=name == "Raw") for name in PREPROCESSING_METHODS
         }
@@ -211,11 +211,11 @@ class GBApplication:
         split.pack(fill="x", pady=(0, 5))
         ratio = ttk.Frame(split)
         ratio.pack(fill="x", pady=2)
-        ttk.Label(ratio, text="Independent validation ratio:").pack(side="left")
+        ttk.Label(ratio, text="Internal holdout ratio:").pack(side="left")
         ttk.Combobox(ratio, textvariable=self.validation_ratio, values=["0.1", "0.15", "0.2", "0.25", "0.3"], width=6, state="readonly").pack(side="left", padx=5)
-        ttk.Radiobutton(split, text="Exploration (reduced settings)", variable=self.mode_var, value="exploration", command=self._mode_changed).pack(anchor="w")
+        ttk.Radiobutton(split, text="Exploration (quick test)", variable=self.mode_var, value="exploration", command=self._mode_changed).pack(anchor="w")
         ttk.Radiobutton(split, text="Standard", variable=self.mode_var, value="standard", command=self._mode_changed).pack(anchor="w")
-        ttk.Radiobutton(split, text="Full", variable=self.mode_var, value="full", command=self._mode_changed).pack(anchor="w")
+        ttk.Radiobutton(split, text="Full", variable=self.mode_var, value="audit", command=self._mode_changed).pack(anchor="w")
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=5)
         ttk.Button(buttons, text="Load and Split Data", command=self._load_data).pack(side="left", padx=5)
@@ -292,13 +292,25 @@ class GBApplication:
         left.pack(side="left", fill="both", expand=True, padx=(0, 5))
         right = ttk.Frame(frame)
         right.pack(side="right", fill="both", expand=True, padx=(5, 0))
-        buttons = ttk.LabelFrame(left, text="Analysis Options", padding=5)
+        options_area = ttk.Frame(left)
+        options_area.pack(fill="both", expand=True)
+        options_canvas = tk.Canvas(options_area, height=220, highlightthickness=0, bg="#FFFFFF")
+        options_scroll = ttk.Scrollbar(options_area, orient="vertical", command=options_canvas.yview)
+        options_content = ttk.Frame(options_canvas)
+        options_window = options_canvas.create_window((0, 0), window=options_content, anchor="nw")
+        options_content.bind("<Configure>", lambda _event: options_canvas.configure(scrollregion=options_canvas.bbox("all")))
+        options_canvas.bind("<Configure>", lambda event: options_canvas.itemconfigure(options_window, width=event.width))
+        options_canvas.configure(yscrollcommand=options_scroll.set)
+        options_canvas.pack(side="left", fill="both", expand=True)
+        options_scroll.pack(side="right", fill="y")
+        buttons = ttk.LabelFrame(options_content, text="Analysis Options", padding=5)
         buttons.pack(fill="x")
         actions = [
             ("Generate Performance Report", self._performance_report),
             ("Create Visualization Plots", self._create_plots),
             ("Compare All Models", self._compare_models),
             ("Export Results", self._export_results),
+            ("Export Candidate", self._export_candidate),
             ("Generate Leaderboard (CSV/HTML)", self._open_leaderboard),
         ]
         for label, command in actions:
@@ -306,6 +318,19 @@ class GBApplication:
         ttk.Separator(buttons).pack(fill="x", pady=5)
         ttk.Button(buttons, text="Select All Options", command=self._select_all).pack(fill="x", pady=2)
         ttk.Button(buttons, text="Load Pipeline / Predict New Data", command=self._predict_new).pack(fill="x", pady=2)
+        choice = ttk.LabelFrame(options_content, text="Candidate Export Choice", padding=5)
+        choice.pack(fill="x", pady=5)
+        ttk.Radiobutton(choice, text="Pipeline ID", variable=self.export_mode_var, value="id").pack(anchor="w")
+        self.export_id_combo = ttk.Combobox(choice, textvariable=self.export_id_var, state="readonly")
+        self.export_id_combo.pack(fill="x", pady=2)
+        ttk.Radiobutton(choice, text="Calibration CV metric", variable=self.export_mode_var, value="metric").pack(anchor="w")
+        self.export_metric_combo = ttk.Combobox(choice, textvariable=self.export_metric_var, state="readonly")
+        self.export_metric_combo.pack(fill="x", pady=2)
+        ttk.Label(choice, text="Metric direction:").pack(anchor="w")
+        ttk.Combobox(choice, textvariable=self.export_direction_var, values=["auto", "higher", "lower"], state="readonly").pack(fill="x")
+        ttk.Label(choice, text="Selection reason (optional):").pack(anchor="w")
+        ttk.Entry(choice, textvariable=self.export_reason_var).pack(fill="x")
+        ttk.Label(choice, text="Default order is descriptive. Choosing after inspecting holdout results uses it for selection.", wraplength=350).pack(anchor="w", pady=4)
         summary = ttk.LabelFrame(left, text="Model Performance Summary", padding=5)
         summary.pack(fill="both", expand=True, pady=(5, 0))
         self.summary_text = ScrolledText(summary, height=10, bg="#FFFDE7", font=("Segoe UI", 9))
@@ -327,10 +352,11 @@ class GBApplication:
         ttk.Button(options, text="1. Analyze Model Performance", command=self._analyze).pack(fill="x", pady=2)
         api = ttk.LabelFrame(left, text="LLM API Configuration", padding=5)
         api.pack(fill="x", pady=(5, 0))
-        ttk.Label(api, text="API Key (Qwen Series Only):").pack(anchor="w")
+        ttk.Label(api, text="API Key (DeepSeek Only):").pack(anchor="w")
         ttk.Entry(api, textvariable=self.api_key_var, show="*").pack(fill="x", pady=2)
+        ttk.Label(api, text="Leave blank to use DEEPSEEK_API_KEY.").pack(anchor="w")
         ttk.Label(api, text="Model Selection:").pack(anchor="w")
-        ttk.Combobox(api, textvariable=self.qwen_model_var, values=QWEN_MODELS, state="readonly").pack(fill="x", pady=2)
+        ttk.Combobox(api, textvariable=self.deepseek_model_var, values=DEEPSEEK_MODELS, state="readonly").pack(fill="x", pady=2)
         ttk.Button(api, text="2. Generate AI Reports (Word/PDF)", command=self._generate_ai_report).pack(fill="x", pady=(8, 2))
         result = ttk.LabelFrame(right, text="AI Report Results", padding=5)
         result.pack(fill="both", expand=True)
@@ -401,6 +427,9 @@ class GBApplication:
             self.base_dir.set(path)
 
     def _load_data(self) -> None:
+        if self._run_busy or self._ai_busy:
+            messagebox.showwarning("Run in progress", "Wait for processing to finish before loading another dataset.")
+            return
         try:
             config = self._config()
             dataset = load_dataset(self.data_file.get(), self.task)
@@ -408,7 +437,7 @@ class GBApplication:
             self.project_step = "Preprocessing"
             self._update_status()
             print(f"Loaded {len(dataset.target)} samples and {dataset.features.shape[1]} features")
-            print(f"Calibration={len(self.dataset_split.y_cal)}, independent validation={len(self.dataset_split.y_validation)}")
+            print(f"Calibration={len(self.dataset_split.y_cal)}, internal holdout={len(self.dataset_split.y_validation)}")
             messagebox.showinfo("Success", "Data loaded and split successfully.")
         except Exception as exc:
             messagebox.showerror("Data loading failed", str(exc))
@@ -423,7 +452,7 @@ class GBApplication:
             messagebox.showwarning("Selection required", "Select at least one preprocessing method.")
             return
         self.preprocessing_text.delete("1.0", "end")
-        self.preprocessing_text.insert("end", "Preprocessing fitted using each training subset:\n\n" + "\n".join(selected))
+        self.preprocessing_text.insert("end", "Preprocessing fitted within calibration training boundaries:\n\n" + "\n".join(selected))
         self.project_step = "Variable selection"
         self._update_status()
 
@@ -433,7 +462,7 @@ class GBApplication:
             messagebox.showwarning("Selection required", "Select at least one variable-selection method.")
             return
         self.selector_text.delete("1.0", "end")
-        self.selector_text.insert("end", "Selectors will be fitted using each CV training subset:\n\n" + "\n".join(selected))
+        self.selector_text.insert("end", "Selectors fitted on calibration training subsets:\n\n" + "\n".join(selected))
         self.project_step = "Model training"
         self._update_status()
 
@@ -452,6 +481,9 @@ class GBApplication:
         )
 
     def _train(self) -> None:
+        if self._run_busy or self._export_busy or self._ai_busy:
+            messagebox.showwarning("Processing in progress", "Wait for the current run or export to finish.")
+            return
         if self.dataset_split is None:
             messagebox.showwarning("Missing data", "Load and split data first.")
             return
@@ -461,8 +493,20 @@ class GBApplication:
         if not preprocessing or not selectors or not models:
             messagebox.showwarning("Selection required", "Select preprocessing, variable selection, and model options.")
             return
-        config = self._config()
+        try:
+            config = self._config()
+            data_path = Path(self.data_file.get()).resolve()
+            dataset = load_dataset(data_path, self.task)
+            run_split = split_dataset(dataset, config)
+        except Exception as exc:
+            messagebox.showerror("Run setup failed", str(exc))
+            return
         specs = enumerate_specs(self.task, preprocessing, selectors, models, seed=config.random_state)
+        self.dataset_split = run_split
+        self.outputs = None
+        self.last_specs = specs
+        self.last_run_data_file = data_path
+        self._run_busy = True
         self.stop_requested = False
         self.stop_button.configure(state="normal")
         self.status_label.configure(text=f"Running {len(specs)} pipelines")
@@ -470,7 +514,7 @@ class GBApplication:
         def work():
             try:
                 engine = EvaluationEngine(
-                    self.dataset_split,
+                    run_split,
                     config,
                     logger=lambda message: self.worker_queue.put(("log", message)),
                     should_stop=lambda: self.stop_requested,
@@ -481,7 +525,7 @@ class GBApplication:
                 )
                 self.worker_queue.put(("done", outputs))
             except Exception as exc:
-                self.worker_queue.put(("error", exc, traceback.format_exc()))
+                self.worker_queue.put(("error", exc, traceback.format_exc(), "run"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -497,16 +541,34 @@ class GBApplication:
                     self.status_label.configure(text=f"{done}/{total}: {spec.model}")
                 elif event[0] == "done":
                     self.outputs = event[1]
+                    self._run_busy = False
                     self.stop_button.configure(state="disabled")
                     self.project_step = "Results analysis"
                     self._update_status()
                     self._refresh_results()
                     messagebox.showinfo("Completed", "Pipeline evaluation completed.")
                 elif event[0] == "error":
-                    self.stop_button.configure(state="disabled")
+                    kind = event[3] if len(event) > 3 else "run"
+                    if kind == "run":
+                        self._run_busy = False
+                        self.stop_button.configure(state="disabled")
+                    elif kind == "export":
+                        self._export_busy = False
+                    elif kind == "ai":
+                        self._ai_busy = False
                     print(event[2])
-                    messagebox.showerror("Pipeline run failed", str(event[1]))
+                    title = {"run": "Pipeline run failed", "export": "Candidate export failed", "ai": "AI report failed"}.get(kind, "Processing failed")
+                    messagebox.showerror(title, str(event[1]))
+                elif event[0] == "export_done":
+                    self._export_busy = False
+                    exported = event[1]
+                    text = f"Pipeline ID: {exported.pipeline_id}\nModel: {exported.bundle_path}\nManifest: {exported.manifest_path}\nInternal holdout: {exported.validation_status}"
+                    if exported.validation_error:
+                        text += "\n" + exported.validation_error
+                    print(text)
+                    messagebox.showinfo("Candidate exported", text)
                 elif event[0] == "ai_done":
+                    self._ai_busy = False
                     _, report, paths = event
                     self.ai_text.delete("1.0", "end")
                     self.ai_text.insert("end", report)
@@ -527,6 +589,7 @@ class GBApplication:
         frame = self.outputs.results
         columns = [
             "Selection_Rank",
+            "Pipeline_ID",
             "Preprocessing",
             "Feature_Selection",
             "Model",
@@ -535,11 +598,18 @@ class GBApplication:
             "CV_MCC" if self.task is TaskType.CLASSIFICATION else "CV_R2",
             "Val_MCC" if self.task is TaskType.CLASSIFICATION else "Val_R2",
             "Val_Evaluated",
+            "Val_Status",
             "Status",
         ]
         available = [column for column in columns if column in frame.columns]
         self.summary_text.delete("1.0", "end")
-        self.summary_text.insert("end", frame.head(15)[available].to_string(index=False))
+        self.summary_text.insert("end", "Default calibration-CV display order (first 15 rows):\n\n" + frame.head(15)[available].to_string(index=False))
+        eligible = frame[frame["Status"].eq("SUCCESS") & frame["Eligible_For_Ranking"].eq(True) & frame["Selection_Rank"].notna()]
+        ids = eligible["Pipeline_ID"].astype(str).tolist()
+        self.export_id_combo.configure(values=ids)
+        if self.export_id_var.get() not in ids:
+            self.export_id_var.set(ids[0] if ids else "")
+        self.export_metric_combo.configure(values=["Selection_Score"] + [name for name in frame if name.startswith("CV_")])
         self.detail_text.delete("1.0", "end")
         self.detail_text.insert("end", frame.to_string(index=False))
         self.training_text.delete("1.0", "end")
@@ -577,6 +647,66 @@ class GBApplication:
         if path:
             self.outputs.results.to_csv(path, index=False, encoding="utf-8-sig")
 
+    def _candidate_export_context(self):
+        """Reconstruct the evaluation from its manifest, never edited GUI controls."""
+        if self.outputs is None or self.last_run_data_file is None:
+            raise ValueError("A completed run and its original input file are required.")
+        manifest = json.loads(self.outputs.manifest.read_text(encoding="utf-8"))
+        config_data = dict(manifest["config"])
+        if TaskType(config_data["task"]) is not self.task:
+            raise ValueError("Run task does not match this application.")
+        config_data.update(output_dir=self.outputs.manifest.parent, n_jobs=1, resume=False, strict=False)
+        config = RunConfig(**config_data)
+        specs = []
+        for item in manifest["pipeline_specs"]:
+            spec = PipelineSpec(
+                TaskType(item["task"]), item["preprocessing"], item["selector"], item["model"],
+                hyperparameters=item.get("hyperparameters", {}), seed=int(item.get("seed", 42)),
+            )
+            if item.get("pipeline_id") != spec.pipeline_id:
+                raise ValueError("Stored pipeline definition does not match its ID.")
+            specs.append(spec)
+        dataset = load_dataset(self.last_run_data_file, self.task)
+        if dataset.fingerprint != manifest["dataset_fingerprint"]:
+            raise ValueError("The original dataset has changed since evaluation. Run it again before export.")
+        split = split_dataset(dataset, config)
+        for key, values in (("calibration_samples", split.sample_cal), ("validation_samples", split.sample_validation)):
+            if key in manifest and list(map(str, manifest[key])) != values.astype(str).tolist():
+                raise ValueError("Recreated calibration/internal holdout partition differs from the stored run.")
+        engine = EvaluationEngine(split, config, logger=lambda message: self.worker_queue.put(("log", message)))
+        return engine, specs, manifest
+
+    def _export_candidate(self) -> None:
+        if not self._require_outputs():
+            return
+        if self._run_busy or self._export_busy:
+            messagebox.showwarning("Processing in progress", "Wait for the current run or export to finish.")
+            return
+        mode = self.export_mode_var.get()
+        pipeline_id = self.export_id_var.get().strip() if mode == "id" else None
+        metric = self.export_metric_var.get().strip() if mode == "metric" else None
+        if mode not in {"id", "metric"} or not (pipeline_id or metric):
+            messagebox.showwarning("Selection required", "Choose a pipeline ID or calibration CV metric.")
+            return
+        direction = self.export_direction_var.get()
+        higher = {"auto": None, "higher": True, "lower": False}.get(direction)
+        reason = self.export_reason_var.get().strip() or None
+        ranked = self.outputs.results.copy(deep=True)
+        self._export_busy = True
+
+        def work():
+            try:
+                engine, specs, manifest = self._candidate_export_context()
+                exported = engine.export_candidate(
+                    ranked, specs, pipeline_id=pipeline_id, metric=metric,
+                    higher_is_better=higher if metric else None, selection_reason=reason,
+                    source_manifest=manifest,
+                )
+                self.worker_queue.put(("export_done", exported))
+            except Exception as exc:
+                self.worker_queue.put(("error", exc, traceback.format_exc(), "export"))
+        threading.Thread(target=work, daemon=True).start()
+
     def _open_leaderboard(self) -> None:
         if self._require_outputs():
             webbrowser.open(self.outputs.leaderboard_html.resolve().as_uri())
@@ -605,35 +735,69 @@ class GBApplication:
         except Exception as exc:
             messagebox.showerror("Prediction failed", str(exc))
 
+    def _report_summary(self):
+        manifest = json.loads(self.outputs.manifest.read_text(encoding="utf-8"))
+        context = {name: manifest.get(name) for name in (
+            "run_id", "evaluation_revision", "dataset_fingerprint", "source_provenance",
+            "calibration_observations", "internal_holdout_observations",
+            "calibration_groups", "internal_holdout_groups",
+        )}
+        config = manifest.get("config", {})
+        context["evaluation_config"] = {name: config.get(name) for name in (
+            "task", "mode", "outer_folds", "inner_folds", "random_state",
+        )}
+        return structured_summary(self.outputs.results, self.task, context=context)
+
     def _analyze(self) -> None:
         if not self._require_outputs():
             return
-        prompt = build_qwen_prompt(structured_summary(self.outputs.results, self.task))
+        try:
+            prompt = build_deepseek_prompt(self._report_summary())
+        except Exception as exc:
+            messagebox.showerror("Report input failed", str(exc))
+            return
         self.ai_text.delete("1.0", "end")
         self.ai_text.insert("end", prompt)
-        path = Path(self.base_dir.get()) / "ai_reports" / f"qwen_prompt_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        path = self.outputs.manifest.parent / "ai_reports" / f"deepseek_prompt_{datetime.now():%Y%m%d_%H%M%S}.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(prompt, encoding="utf-8")
 
     def _generate_ai_report(self) -> None:
+        if self._ai_busy:
+            messagebox.showwarning("Report in progress", "Wait for the current AI report to finish.")
+            return
         if not self._require_outputs():
             return
-        summary = structured_summary(self.outputs.results, self.task)
-        api_key = self.api_key_var.get()
-        model_name = self.qwen_model_var.get()
+        try:
+            summary = self._report_summary()
+        except Exception as exc:
+            messagebox.showerror("Report input failed", str(exc))
+            return
+        # Capture the effective key before starting the worker, including the
+        # environment fallback, so queued exceptions can redact the same key.
+        api_key = self.api_key_var.get().strip() or os.getenv("DEEPSEEK_API_KEY", "").strip()
+        model_name = self.deepseek_model_var.get()
+        if model_name not in DEEPSEEK_MODELS:
+            messagebox.showerror("Unsupported model", "Select deepseek-flash or deepseek-v4-pro.")
+            return
+        report_dir = self.outputs.manifest.parent / "ai_reports"
+        self._ai_busy = True
 
         def work():
             try:
-                report = call_qwen(summary, api_key, model_name)
-                paths = write_report_files(report, Path(self.base_dir.get()) / "ai_reports", f"gb_{self.task.value}_report")
+                report = call_deepseek(summary, api_key, model_name, record_dir=report_dir / "call_records")
+                paths = write_report_files(report, report_dir, f"gb_{self.task.value}_report")
                 self.worker_queue.put(("ai_done", report, paths))
             except Exception as exc:
-                self.worker_queue.put(("error", exc, traceback.format_exc()))
+                error_text, trace = str(exc), traceback.format_exc()
+                if api_key:
+                    error_text, trace = error_text.replace(api_key, "[REDACTED]"), trace.replace(api_key, "[REDACTED]")
+                self.worker_queue.put(("error", RuntimeError(error_text), trace, "ai"))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _save_state(self) -> None:
-        path = Path(self.base_dir.get()) / "project_state.json"
+        path = Path(self.base_dir.get()) / "project_state_v2.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "task": self.task.value,
@@ -653,13 +817,14 @@ class GBApplication:
         self._update_status()
 
     def _load_state(self) -> None:
-        path = Path(self.base_dir.get()) / "project_state.json"
+        path = Path(self.base_dir.get()) / "project_state_v2.json"
         if not path.exists():
-            messagebox.showinfo("State", "No saved project state was found.")
+            messagebox.showinfo("State", "No saved v2 project state was found.")
             return
         state = json.loads(path.read_text(encoding="utf-8"))
         for variable, key in [(self.data_file, "data_file"), (self.validation_ratio, "validation_ratio"), (self.mode_var, "mode"), (self.outer_folds, "outer_folds"), (self.inner_folds, "inner_folds"), (self.seed_var, "seed")]:
-            variable.set(state.get(key, variable.get()))
+            legacy_key = "holdout_ratio" if key == "validation_ratio" else key
+            variable.set(state.get(key, state.get(legacy_key, variable.get())))
         for key, mapping in [("preprocessing", self.preprocessing_vars), ("selectors", self.selector_vars), ("models", self.model_vars)]:
             for name, value in state.get(key, {}).items():
                 if name in mapping:
@@ -668,9 +833,14 @@ class GBApplication:
         self._update_status()
 
     def _reset(self) -> None:
+        if self._run_busy or self._export_busy or self._ai_busy:
+            messagebox.showwarning("Processing in progress", "Wait for processing to finish before resetting.")
+            return
         if messagebox.askyesno("Reset", "Clear loaded data and in-memory results?"):
             self.dataset_split = None
             self.outputs = None
+            self.last_specs = []
+            self.last_run_data_file = None
             self.project_step = "Data loading"
             self.progress_var.set(0)
             for widget in (self.preprocessing_text, self.selector_text, self.training_text, self.summary_text, self.detail_text, self.ai_text):

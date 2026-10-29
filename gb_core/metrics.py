@@ -100,10 +100,30 @@ def _percentile(series: pd.Series, higher_is_better: bool = True) -> pd.Series:
     return values.rank(method="average", pct=True, ascending=higher_is_better)
 
 
-def rank_results(frame: pd.DataFrame, task: TaskType) -> pd.DataFrame:
-    """Rank candidates using calibration-set cross-validation evidence only."""
-    task = TaskType(task)
+def normalize_result_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Map legacy OOF_/Validation_ column names to Cal/CV/Val presentation names."""
     result = frame.copy()
+    renames = {}
+    for column in list(result.columns):
+        if column.startswith("OOF_") and column != "OOF_Selection_Score":
+            renames[column] = "CV_" + column[len("OOF_") :]
+        elif column == "OOF_Selection_Score":
+            renames[column] = "Selection_Score"
+        elif column.startswith("Validation_"):
+            suffix = column[len("Validation_") :]
+            if suffix in {"Evaluated", "Status", "Error"}:
+                renames[column] = f"Val_{suffix}"
+            else:
+                renames[column] = f"Val_{suffix}"
+    if renames:
+        result = result.rename(columns=renames)
+    return result
+
+
+def rank_results(frame: pd.DataFrame, task: TaskType) -> pd.DataFrame:
+    """Rank candidates from calibration-set nested-CV evidence only (shown as CV_*)."""
+    task = TaskType(task)
+    result = normalize_result_frame(frame)
     eligible = (
         result["Status"].astype(str).eq(RunStatus.SUCCESS.value)
         & result["Eligible_For_Ranking"].astype(bool)
@@ -188,3 +208,28 @@ def reorder_leaderboard_columns(frame: pd.DataFrame, task: TaskType) -> pd.DataF
     schema = [column for column in result_columns(task) if column in remainder]
     extras = [column for column in remainder if column not in schema]
     return frame.loc[:, front + schema + extras]
+
+
+def add_legacy_validation_aliases(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    for column in list(result.columns):
+        if column.startswith("Val_") and column.split("_", 1)[1] not in {"Evaluated", "Status", "Error"}:
+            suffix = column[len("Val_") :]
+            result[f"Holdout_{suffix}"] = result[column]
+            result[f"Validation_{suffix}"] = result[column]
+        if column.startswith("CV_"):
+            result["OOF_" + column[len("CV_") :]] = result[column]
+    if "Selection_Score" in result.columns:
+        result["GB_Glassbox_Selection_Score"] = result["Selection_Score"]
+        result["OOF_Selection_Score"] = result["Selection_Score"]
+        result["OOF_Audit_Score"] = result["Selection_Score"]
+    if "Selection_Rank" in result.columns:
+        result["Glassbox_Rank"] = result["Selection_Rank"]
+        result["OOF_Audit_Rank"] = result["Selection_Rank"]
+    if "Val_Evaluated" in result.columns:
+        result["Validation_Evaluated"] = result["Val_Evaluated"]
+    if "Val_Status" in result.columns:
+        result["Validation_Status"] = result["Val_Status"]
+    if "Val_Error" in result.columns:
+        result["Validation_Error"] = result["Val_Error"]
+    return result

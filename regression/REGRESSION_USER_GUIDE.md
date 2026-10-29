@@ -2,60 +2,32 @@
 
 ## Workflow
 
-1. In **Data Loading**, select a CSV/XLSX/XLS file and project directory. Choose Exploration (reduced settings), Standard, or Full mode.
-2. Load and split the data. Confirm the displayed calibration and independent-validation sample counts.
-3. Select preprocessing methods. Imputation and learned preprocessing parameters are fitted using each cross-validation training subset only.
-4. Select variable-selection methods. VIP, GA, iPLS, CARS, and SFLA use only the target values available in the applicable training subset.
-5. Select regression models and the outer/inner cross-validation counts, then start training.
-6. Review `Selection_Rank`, `Selection_Score`, Cal/CV/Val metrics, stability, selected variables, backend, and failures in **Results Analysis**.
-7. Generate plots, export results, load the saved Rank 1 pipeline, predict new samples, or optionally create a Qwen scientific summary.
-
-## Input
-
-Required columns:
-
-- `Sample name`: row identifier.
-- `Target`: numeric response.
-- Numeric predictor columns.
-
-Optional columns:
-
-- `Group`: assigns repeated measurements from the same independent object to one group. A group is never divided across calibration, validation, or cross-validation held-out subsets.
-- `Split`: accepts `calibration`, `cal`, `train`, or `training` for calibration and `validation`, `val`, or `test` for independent validation. Without this column, GB creates the split from the selected ratio and seed.
-
-## Evaluation modes
-
-- **Exploration** uses reduced variable-selection budgets, fixed SG settings, and fixed model settings.
-- **Standard** uses full variable-selection budgets, searches SG settings, and applies medium model grids.
-- **Full** uses full variable-selection budgets, searches SG settings, and applies the expanded model grids documented in the root `to_the_user.md`.
+1. In **Data Loading**, choose a CSV/XLSX/XLS file, output directory and Exploration, Standard or Full mode. Input requires `Sample name`, `Target` and numeric predictors.
+2. Supply `Group` for repeated or matched observations and document `Split` / source context. Supplied groups are kept apart at the calibration/internal-holdout and group-aware CV boundaries; labels alone do not verify physical specimens.
+3. Select preprocessing, variable-selection and model methods, CV settings and seed, then run. The full library is 15 × 6 × 11 = 990 structures. Actual candidate counts depend on the selected methods; **Select All Options** selects the entire structural library. Full mode controls tuning budgets and does not automatically select every method. The library is finite.
+4. Review all result metrics in **Results Analysis**. The default score/order is one browsing rule; use criteria appropriate to the scientific question.
+5. Use **Export Candidate** to choose a Pipeline ID or permitted CV metric and record the selection reason. Direction can be `auto` for recognized metrics or explicitly set to `higher` or `lower`; other numeric CV metrics require an explicit direction. Export refits that candidate and retains decision/refit evidence; it does not rerun the whole library.
+6. Use **Load Pipeline / Predict New Data** to reuse a fitted bundle with all original input predictor columns.
+7. Optionally review the structured evidence in **AI Report Generation** before generating a DeepSeek interpretation. The GUI defaults to `deepseek-flash` and offers `deepseek-v4-pro`. Use the masked credential field or `DEEPSEEK_API_KEY`. Calls retain actual request/response evidence in `ai_reports/call_records` without credentials.
 
 ## Result interpretation
 
-- `Cal_*`: apparent performance after fitting all calibration observations; not used for ranking.
-- `CV_*`: calibration-set two-level cross-validation performance; the ranking basis.
-- `Selection_Score`: weighted percentile score based on inverse RMSE, R2, RPD, RPIQ, and stability.
-- `Selection_Rank`: candidate order fixed before validation is evaluated.
-- `Val_*`: performance on the predefined independent-validation observations; descriptive only and unable to change the rank.
-- `Overfit_*`: Cal/CV/Val diagnostic differences; not used for ranking.
+- `Cal_*`: apparent full-calibration performance; not used for ordering.
+- `CV_*`: candidate-level calibration CV; selection among candidates using these values may be optimistic.
+- `Selection_Score`: default weighted calibration-CV percentile score; uses the weights defined in `METHODS.md`.
+- `Selection_Rank`: position in the default score display order, calculated after candidate Cal/Val evaluation.
+- `Val_*`: descriptive internal-holdout metrics; excluded from the default score.
+- `Val_Status` / `Val_Error`: holdout success/failure independent of available CV evidence.
+- `Overfit_*`: descriptive Cal/CV/Val comparisons; not part of the score.
 
-Regression metrics are R2, RMSE, MAE, RPD, RPIQ, RER, Bias, Slope, and Intercept.
+A holdout failure may coexist with successful CV evidence and eligibility. Calibration computation or required full-calibration fit failures remain explicit failed rows. No training prediction substitutes for a holdout prediction.
 
-Rows that fail before a valid `CV_*` result have `Eligible_For_Ranking=False`. A later validation problem is recorded in `Val_Status` and `Val_Error` while the previously assigned rank remains unchanged.
+The candidate outer test is not used to fit preprocessing, selection or tuning. Model-grid inner scoring refits preprocessing/selection on inner-training data. SG choice precedes model-grid scoring, and selector fitness operates on already preprocessed inputs; their internal scores have the limits described in root `METHODS.md`. No extra outer evaluation of whole-library selection is performed. CARS calculates one importance value per predictor and supports both orientations of the PLS coefficient array.
 
-## Saved pipeline and prediction
+Default automatic `best_regression_pipeline.joblib` / `rank1` exports describe the first eligible candidate in the default CV order and do not prove optimality. Explicit CV-metric export still selects on the available CV estimates. Choosing after inspecting all holdout results consumes that holdout for further selection; report that decision and obtain an untouched evaluation if needed.
 
-`best_regression_pipeline.joblib` contains the fitted preprocessor, selector, regressor, feature schema, parameters, software/schema versions, and dataset fingerprint.
+## Prediction and records
 
-New data must contain the same predictor names as the saved bundle. Use **Load Pipeline / Predict New Data** in Results Analysis or:
+The fitted preprocessing, selected variables and model are reused during prediction. New data must contain every original input predictor column recorded in the bundle, including predictors subsequently excluded by variable selection. The GUI and CLI select and reorder these columns by name; additional sample-identifier or metadata columns may remain in the input file. Retain source/dependency provenance, the fitted bundle, dataset fingerprint, Group/Split context, selected candidate/reason and refit evidence. Source hashes identify the executing Python files.
 
-```powershell
-python regression\grand_banquet_regression.py --predict-model regression_output\best_regression_pipeline.joblib --predict-data new_samples.csv
-```
-
-The saved preprocessing and selector are applied directly; variable selection is not rerun.
-
-## Outputs and scientific summary
-
-The project directory contains `pipeline_results.csv`, `leaderboard.csv`, `leaderboard.html`, prediction files, fold metadata, manifests, plots, and the Rank 1 bundle. Together, these files form the Reproducible Analysis Record.
-
-The optional Qwen function receives a structured summary of the results. It is instructed to distinguish CV-based ranking from later validation and not to re-rank candidates using `Val_*`.
+DeepSeek reporting uses `https://api.deepseek.com` and the `build_deepseek_prompt` / `call_deepseek` APIs. Call records retain actual structured input, system/user prompts, request parameters, requested/returned model identities, dates and response. Model aliases are not immutable-version guarantees; retain each returned identity. Retained call records support auditing; remote output is not guaranteed to repeat exactly. See root `README.md` for official provider references and interpretation limits.

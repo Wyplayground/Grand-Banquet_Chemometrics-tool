@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import sqlite3
+import subprocess
 import sys
 from contextlib import closing
 from dataclasses import dataclass
@@ -15,7 +17,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from .contracts import PipelineSpec, SCHEMA_VERSION, SOFTWARE_VERSION, TaskType
+from .contracts import PipelineSpec, SCHEMA_VERSION, TaskType
 
 
 _PIPELINE_RESULTS_DDL = """
@@ -96,7 +98,6 @@ class FinalPipelineBundle:
     dataset_fingerprint: str
     label_encoder: Any = None
     schema_version: str = SCHEMA_VERSION
-    software_version: str = SOFTWARE_VERSION
 
     def predict_frame(self, features: pd.DataFrame) -> np.ndarray:
         missing = [name for name in self.feature_names if name not in features.columns]
@@ -144,14 +145,70 @@ def dependency_versions() -> Dict[str, str]:
     return versions
 
 
+def source_provenance(source_root: str | Path | None = None) -> Dict[str, Any]:
+    """Fingerprint Python sources in the executing source copy, not an ancestor repo.
+
+    The combined digest covers sorted, POSIX relative paths and each file's raw-byte
+    SHA-256. It excludes the absolute installation path, so identical copies have
+    identical combined digests. Tests, upload folders and Python caches are omitted.
+    A Git commit is supplementary context only; hashes describe the working files.
+    """
+    root = Path(source_root).resolve() if source_root is not None else Path(__file__).resolve().parent.parent
+    excluded = {"__pycache__", ".git", "test", "tests", "upload", "uploads"}
+    hashes: Dict[str, str] = {}
+    for package in ("gb_core", "classification", "regression"):
+        package_root = root / package
+        if not package_root.is_dir():
+            continue
+        for path in sorted(package_root.rglob("*.py")):
+            relative = path.relative_to(root)
+            if any(part.lower() in excluded for part in relative.parts) or path.name.startswith("test_"):
+                continue
+            hashes[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    combined = hashlib.sha256()
+    for relative, digest in sorted(hashes.items()):
+        combined.update(relative.encode("utf-8"))
+        combined.update(b"\0")
+        combined.update(digest.encode("ascii"))
+        combined.update(b"\n")
+    provenance: Dict[str, Any] = {
+        "source_root": str(root),
+        "source_files": dict(sorted(hashes.items())),
+        "source_file_count": len(hashes),
+        "combined_sha256": combined.hexdigest(),
+        "hash_contract": "SHA-256 of sorted relative-path UTF-8, NUL, file SHA-256 ASCII, newline; file hashes use raw bytes",
+        "scope": "gb_core, classification and regression Python sources; excludes tests, uploads and caches",
+    }
+    # A manuscript copy may live inside an unrelated Git worktree. Do not let
+    # `git -C` walk up to it, or describe that ancestor's commit as this source.
+    if (root / ".git").exists():
+        try:
+            repository_root = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                check=True, capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if Path(repository_root).resolve() == root:
+                commit = subprocess.run(
+                    ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+                    check=True, capture_output=True, text=True, timeout=10,
+                ).stdout.strip()
+                provenance["git_commit"] = commit
+        except (OSError, subprocess.SubprocessError):
+            # Exported source packages and environments without Git still have
+            # complete per-file and combined hashes.
+            pass
+    return provenance
+
+
 def write_manifest(path: str | Path, payload: Dict[str, Any]) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dict(payload)
-    data.setdefault("software_version", SOFTWARE_VERSION)
     data.setdefault("schema_version", SCHEMA_VERSION)
     data.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     data.setdefault("dependencies", dependency_versions())
+    if "source_provenance" not in data:
+        data["source_provenance"] = source_provenance()
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(temporary, path)

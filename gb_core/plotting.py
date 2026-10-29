@@ -25,8 +25,11 @@ COLORS = {
 
 
 def _eligible(results: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
-    frame = results[results["Eligible_For_Ranking"].astype(bool)].copy()
-    return frame.sort_values("Selection_Rank").head(top_n)
+    # CSV strings such as "False" must not become truthy merely by casting.
+    eligible = results["Eligible_For_Ranking"].astype(str).str.strip().str.lower().isin({"true", "1", "1.0"})
+    frame = results.loc[eligible].copy()
+    frame["Selection_Rank"] = pd.to_numeric(frame["Selection_Rank"], errors="coerce")
+    return frame.sort_values("Selection_Rank", kind="stable").head(top_n)
 
 
 def compare_models_plot(results: pd.DataFrame, output_path: str | Path, top_n: int = 20) -> Path:
@@ -35,6 +38,7 @@ def compare_models_plot(results: pd.DataFrame, output_path: str | Path, top_n: i
     labels = frame["Model"].astype(str) + "\n" + frame["Preprocessing"].astype(str) + " / " + frame["Feature_Selection"].astype(str)
     x = np.arange(len(frame))
     fig, axes = plt.subplots(2, 1, figsize=(15, 10), constrained_layout=True)
+    fig.suptitle("First-listed candidates under the configured CV score ordering")
     axes[0].bar(x, frame["Selection_Score"], color=COLORS["orange"], alpha=0.88)
     axes[0].set_ylabel("Selection Score")
     axes[0].set_xticks(x, labels, rotation=90, fontsize=7)
@@ -62,7 +66,7 @@ def create_visualization_suite(results: pd.DataFrame, output_dir: str | Path, ta
     x = np.arange(len(frame))
     primary = "CV_MCC" if task is TaskType.CLASSIFICATION else "CV_RMSE"
     axes[0, 0].plot(x, frame[primary], marker="o", color=COLORS["teal"])
-    axes[0, 0].set_title(f"{primary} across top pipelines")
+    axes[0, 0].set_title(f"{primary} across first-listed candidates")
     axes[0, 0].grid(alpha=0.25)
     axes[0, 1].scatter(frame["Stability_Percentile"], frame["Selection_Score"], color=COLORS["teal"])
     axes[0, 1].set_xlabel("Fold-stability percentile")
@@ -74,17 +78,18 @@ def create_visualization_suite(results: pd.DataFrame, output_dir: str | Path, ta
     axes[1, 0].grid(alpha=0.25)
     model_counts = frame["Model"].value_counts()
     axes[1, 1].barh(model_counts.index, model_counts.values, color=COLORS["yellow"], edgecolor=COLORS["teal"])
-    axes[1, 1].set_title("Models represented in top pipelines")
+    axes[1, 1].set_title("Models represented in first-listed candidates")
     stage_path = output_dir / "cv_selection_diagnostics.png"
     fig.savefig(stage_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     paths.append(stage_path)
 
-    best = frame.sort_values("Selection_Rank").iloc[0]
-    prediction_path = output_dir.parent / "predictions" / f"{best['Pipeline_ID']}_cv.csv"
+    example = frame.iloc[0]
+    prediction_path = output_dir.parent / "predictions" / f"{example['Pipeline_ID']}_cv.csv"
     if prediction_path.exists():
         predictions = pd.read_csv(prediction_path)
         fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+        fig.suptitle(f"Candidate-level calibration CV: default example {example['Pipeline_ID']}")
         if task is TaskType.REGRESSION:
             observed = pd.to_numeric(predictions["Observed"], errors="coerce")
             predicted = pd.to_numeric(predictions["CV_Predicted"], errors="coerce")
@@ -99,12 +104,12 @@ def create_visualization_suite(results: pd.DataFrame, output_dir: str | Path, ta
             axes[1].set_xlabel("CV predicted")
             axes[1].set_ylabel("Residual")
         else:
-            observed = predictions.get("Observed_Label", predictions["Observed"]).astype(str)
-            predicted = predictions.get("CV_Predicted_Label", predictions["CV_Predicted"]).astype(str)
+            observed = predictions["Observed_Label" if "Observed_Label" in predictions else "Observed"].astype(str)
+            predicted = predictions["CV_Predicted_Label" if "CV_Predicted_Label" in predictions else "CV_Predicted"].astype(str)
             labels = sorted(set(observed).union(predicted))
             matrix = confusion_matrix(observed, predicted, labels=labels)
             ConfusionMatrixDisplay(matrix, display_labels=labels).plot(ax=axes[0], colorbar=False, cmap="Blues")
-            axes[0].set_title("Best pipeline CV confusion matrix")
+            axes[0].set_title("Default example CV confusion matrix")
             accuracy_by_class = np.diag(matrix) / np.maximum(matrix.sum(axis=1), 1)
             axes[1].bar(labels, accuracy_by_class, color=COLORS["orange"])
             axes[1].set_ylim(0, 1)
