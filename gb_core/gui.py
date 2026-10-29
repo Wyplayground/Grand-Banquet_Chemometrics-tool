@@ -738,7 +738,7 @@ class GBApplication:
     def _report_summary(self):
         manifest = json.loads(self.outputs.manifest.read_text(encoding="utf-8"))
         context = {name: manifest.get(name) for name in (
-            "run_id", "evaluation_revision", "dataset_fingerprint", "source_provenance",
+            "run_id", "dataset_fingerprint", "source_provenance",
             "calibration_observations", "internal_holdout_observations",
             "calibration_groups", "internal_holdout_groups",
         )}

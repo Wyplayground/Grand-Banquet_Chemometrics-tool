@@ -9,9 +9,11 @@ Two applications share `gb_core/`:
 - `classification/grand_banquet_classification.py`
 - `regression/grand_banquet_regression.py`
 
-The accompanying manuscript, *Grand Banquet: A Glass-Box Chemometric Framework for Analytical Data Matrices*, describes five tasks reconstructed from three public datasets. Its reported runs used all 990 structures per task, three outer and three inner calibration-CV folds, and fixed group-aware calibration/internal-holdout partitions. The five manuscript task results have not been recomputed for this source update. Synthetic examples are software checks and should not be interpreted as the manuscript measurements. See [`METHODS.md`](METHODS.md) for evaluation boundaries and the task-specific user guides for operation.
+The accompanying manuscript, *Grand Banquet: A Glass-Box Chemometric Framework for Analytical Data Matrices*, describes five tasks reconstructed from three public datasets. Its reported runs used all 990 structures per task, three outer and three inner calibration-CV folds, and fixed group-aware calibration/internal-holdout partitions. The five manuscript task results have not been recomputed for this source update. Synthetic examples are software checks and should not be interpreted as the manuscript measurements. See [`Evaluation methods.md`](Evaluation%20methods.md) for evaluation boundaries and the task-specific user guides for operation.
 
 No Windows executable is included in this source copy.
+
+The files in `gui_screenshots/` preserve the earlier interface for repository layout compatibility. They are historical images; the AI reporting screenshots show Qwen, while the current application uses DeepSeek.
 
 ## Installation and running
 
@@ -44,7 +46,7 @@ Mode labels do not establish statistical validity for a particular dataset.
 
 ## Evaluation and interpretation
 
-Each candidate receives outer calibration-CV predictions (`CV_*`). Model-parameter scoring refits preprocessing and variable selection on each inner-training subset. SG settings and selector fitness have additional sequential/internal boundaries explained in `METHODS.md`; the implementation does not claim every internal score is leakage-proof.
+Each candidate receives outer calibration-CV predictions (`CV_*`). Model-parameter scoring refits preprocessing and variable selection on each inner-training subset. SG settings and selector fitness have additional sequential/internal boundaries explained in `Evaluation methods.md`; the implementation does not claim every internal score is leakage-proof.
 
 For each candidate completing calibration CV, a full-calibration fit produces apparent `Cal_*` metrics and computes internal-holdout `Val_*` metrics **before aggregate score calculation and sorting**. `Val_*` never enters `Selection_Score`. A holdout failure is recorded separately in `Val_Status` / `Val_Error` and does not erase successful calibration-CV evidence. Full-calibration fit failures remain explicit.
 
@@ -96,9 +98,9 @@ Runs retain `pipeline_results_v3.csv`, `leaderboard_v3.csv`, an HTML view, per-c
 
 Run manifests include dependency versions and `source_provenance`: the active source root, per-file raw-byte SHA-256 hashes for Python files in `gb_core`, `classification`, and `regression`, and a deterministic combined digest. Tests, upload folders and caches are excluded. A Git commit is added only if this exact source root is itself a valid Git checkout; an unrelated ancestor repository is never used. Hashes identify the executing source files.
 
-Checkpoint run IDs include an evaluation-compatibility identifier, together with the dataset fingerprint, scientific configuration and candidate definitions. Exact source hashes remain the provenance evidence. Current per-candidate prediction/metadata files are cleared before reattempt, and existing default-export files are cleared before export, preventing stale files from being shown as the new attempt's outputs.
+Checkpoint run IDs include the executing Python source digest, together with the dataset fingerprint, scientific configuration and candidate definitions. Per-file source hashes remain in the provenance record. Current per-candidate prediction/metadata files are cleared before reattempt, and existing default-export files are cleared before export, preventing stale files from being shown as the new attempt's outputs.
 
-CARS handles both target-by-feature and feature-by-target PLS coefficient arrays and calculates one importance value per predictor. See `METHODS.md` for the evaluation and selection procedures.
+CARS handles both target-by-feature and feature-by-target PLS coefficient arrays and calculates one importance value per predictor. See `Evaluation methods.md` for the evaluation and selection procedures.
 
 Optional DeepSeek interpretation sends structured result evidence by default to `https://api.deepseek.com`. The GUI defaults to `deepseek-flash` and also offers `deepseek-v4-pro`. `gb_core.reporting.build_deepseek_prompt` builds the prompt and `call_deepseek` performs the optional call. API credentials are read from the masked GUI field or `DEEPSEEK_API_KEY` and are not saved in run state or call records. See the [official DeepSeek API documentation](https://api-docs.deepseek.com/) and [chat-completion API reference](https://api-docs.deepseek.com/api/create-chat-completion/) for provider details.
 

@@ -9,6 +9,7 @@ import traceback
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -17,7 +18,7 @@ import pandas as pd
 from sklearn.model_selection import ParameterGrid
 from sklearn.preprocessing import LabelEncoder
 
-from .artifacts import CheckpointStore, FinalPipelineBundle, save_bundle, write_manifest
+from .artifacts import CheckpointStore, FinalPipelineBundle, save_bundle, source_provenance, write_manifest
 from .contracts import (
     EvaluationMode,
     PipelineSpec,
@@ -51,7 +52,10 @@ from .transformers import (
 )
 
 
-EVALUATION_REVISION = "aca-v2.5-review-2026-10-08-cars-layout-fix"
+@lru_cache(maxsize=1)
+def _source_digest() -> str:
+    """Bind run and cache identity to the executing Python source files."""
+    return source_provenance()["combined_sha256"]
 
 
 @dataclass
@@ -149,7 +153,7 @@ class EvaluationEngine:
             self._checkpoint = CheckpointStore(self.output_dir / "checkpoint.sqlite")
         return self._checkpoint
 
-    def _run_id(self, specs: Sequence[PipelineSpec], *, include_revision: bool = True) -> str:
+    def _run_id(self, specs: Sequence[PipelineSpec]) -> str:
         scientific_config = {
             "task": self.config.task.value,
             "schema_version": SCHEMA_VERSION,
@@ -159,9 +163,8 @@ class EvaluationEngine:
             "inner_folds": self.config.inner_folds,
             "random_state": self.config.random_state,
             "selector_penalty": self.config.selector_penalty,
+            "source_sha256": _source_digest(),
         }
-        if include_revision:
-            scientific_config["evaluation_revision"] = EVALUATION_REVISION
         payload = json.dumps(
             {
                 "fingerprint": self.split.fingerprint,
@@ -378,7 +381,7 @@ class EvaluationEngine:
         self._evidence_marker(spec).write_text(json.dumps({
             "run_id": run_id, "pipeline_id": spec.pipeline_id,
             "dataset_fingerprint": self.split.fingerprint,
-            "evaluation_revision": EVALUATION_REVISION,
+            "source_sha256": _source_digest(),
             "validation_status": row["Val_Status"], "file_sha256": hashes,
         }, indent=2), encoding="utf-8")
 
@@ -393,7 +396,7 @@ class EvaluationEngine:
             if (marker.get("run_id") != run_id
                 or marker.get("pipeline_id") != spec.pipeline_id
                 or marker.get("dataset_fingerprint") != self.split.fingerprint
-                or marker.get("evaluation_revision") != EVALUATION_REVISION
+                or marker.get("source_sha256") != _source_digest()
                 or marker.get("validation_status") != row.get("Val_Status")):
                 return False
             files = self._evidence_files(spec)
@@ -621,10 +624,19 @@ class EvaluationEngine:
             manifest_ids = [item.get("pipeline_id") for item in source_manifest.get("pipeline_specs", [])]
             if manifest_ids != [spec.pipeline_id for spec in specs]:
                 raise ValueError("Source manifest pipeline specifications do not match the supplied library.")
+            source_config = source_manifest.get("config", {})
+            current_config = self.config.to_dict()
+            scientific_keys = (
+                "task", "mode", "validation_ratio", "outer_folds", "inner_folds",
+                "random_state", "selector_penalty",
+            )
+            if not isinstance(source_config, dict) or any(
+                source_config.get(key) != current_config.get(key) for key in scientific_keys
+            ):
+                raise ValueError("Source manifest scientific configuration does not match this run.")
             expected_run = str(source_manifest.get("run_id", ""))
-            accepted_runs = {self._run_id(specs), self._run_id(specs, include_revision=False)}
-            if expected_run not in accepted_runs:
-                raise ValueError("Source manifest does not match the current scientific configuration.")
+            if not expected_run:
+                raise ValueError("Source manifest is missing its run identifier.")
         if "Run_ID" not in ranked or not ranked["Run_ID"].eq(expected_run).all():
             raise ValueError("Candidate results do not match the verified dataset/configuration/run.")
         candidates = self._eligible_candidates(ranked)
@@ -718,11 +730,10 @@ class EvaluationEngine:
             "pipeline_spec": spec.to_dict(),
             "dataset_fingerprint": self.split.fingerprint,
             "source_run_id": selected.get("Run_ID"),
-            "source_evaluation_revision": (
-                source_manifest.get("evaluation_revision", "legacy working-tree implementation")
-                if source_manifest is not None else EVALUATION_REVISION
+            "source_sha256": (
+                source_manifest.get("source_provenance", {}).get("combined_sha256")
+                if source_manifest is not None else _source_digest()
             ),
-            "evaluation_revision": EVALUATION_REVISION,
             "selection_basis": selection_basis,
             "selection_metric": metric,
             "higher_is_better": higher_is_better,
@@ -909,7 +920,6 @@ class EvaluationEngine:
             self.output_dir / "run_manifest.json",
             {
                 "run_id": run_id,
-                "evaluation_revision": EVALUATION_REVISION,
                 "config": self.config.to_dict(),
                 "dataset_fingerprint": self.split.fingerprint,
                 "calibration_samples": self.split.sample_cal.tolist(),

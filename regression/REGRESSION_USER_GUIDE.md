@@ -14,7 +14,7 @@
 
 - `Cal_*`: apparent full-calibration performance; not used for ordering.
 - `CV_*`: candidate-level calibration CV; selection among candidates using these values may be optimistic.
-- `Selection_Score`: default weighted calibration-CV percentile score; uses the weights defined in `METHODS.md`.
+- `Selection_Score`: default weighted calibration-CV percentile score; uses the weights defined in `Evaluation methods.md`.
 - `Selection_Rank`: position in the default score display order, calculated after candidate Cal/Val evaluation.
 - `Val_*`: descriptive internal-holdout metrics; excluded from the default score.
 - `Val_Status` / `Val_Error`: holdout success/failure independent of available CV evidence.
@@ -22,7 +22,7 @@
 
 A holdout failure may coexist with successful CV evidence and eligibility. Calibration computation or required full-calibration fit failures remain explicit failed rows. No training prediction substitutes for a holdout prediction.
 
-The candidate outer test is not used to fit preprocessing, selection or tuning. Model-grid inner scoring refits preprocessing/selection on inner-training data. SG choice precedes model-grid scoring, and selector fitness operates on already preprocessed inputs; their internal scores have the limits described in root `METHODS.md`. No extra outer evaluation of whole-library selection is performed. CARS calculates one importance value per predictor and supports both orientations of the PLS coefficient array.
+The candidate outer test is not used to fit preprocessing, selection or tuning. Model-grid inner scoring refits preprocessing/selection on inner-training data. SG choice precedes model-grid scoring, and selector fitness operates on already preprocessed inputs; their internal scores have the limits described in root `Evaluation methods.md`. No extra outer evaluation of whole-library selection is performed. CARS calculates one importance value per predictor and supports both orientations of the PLS coefficient array.
 
 Default automatic `best_regression_pipeline.joblib` / `rank1` exports describe the first eligible candidate in the default CV order and do not prove optimality. Explicit CV-metric export still selects on the available CV estimates. Choosing after inspecting all holdout results consumes that holdout for further selection; report that decision and obtain an untouched evaluation if needed.
 
