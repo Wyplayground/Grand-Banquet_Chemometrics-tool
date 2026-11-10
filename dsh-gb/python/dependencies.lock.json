@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "python": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13"
+  ],
+  "packages": 46,
+  "requirements_sha256": "acab570815913445d308eafd618c7c6801a4c761958ea674f4967af961db4a74",
+  "pins_sha256": "6e6ac9d62e3fe71d6b4d038a833db6c227e55bb0cb5a8afbe96e7d2daf164aa4"
+}

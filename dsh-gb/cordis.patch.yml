@@ -1,0 +1,22 @@
+- insert:
+    - id: gb
+      name: dsh-gb
+      config:
+        # Set absolute paths in your profile override before use.
+        pythonPath: python
+        gbRoot: ''
+        workspaceRoot: ''
+    - id: preset-gb-analysis
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: gb-analysis
+        name: GB 分析
+        description: 用 GB 检查数据、制定计划、运行分析并展示结果，不调用通用命令工具。
+        order: 5
+        plugins:
+          - id: gb-policy
+            name: dsh-gb/mode
+          - id: gb-job-controls
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: gb-presentation
+            name: '@deepseek-ai/dsh-tool-present'

@@ -17,6 +17,8 @@ The files in `gui_screenshots/` preserve the earlier interface for repository la
 
 ## Installation and running
 
+Use the GB workbench or the local MCP server to run Grand Banquet from DeepSeek Harness. [Harness plugin guide](dsh-gb/README.md) · [简体中文](dsh-gb/README.zh-CN.md)
+
 Use Python 3.10–3.13. From this source root in your chosen environment:
 
 ```powershell

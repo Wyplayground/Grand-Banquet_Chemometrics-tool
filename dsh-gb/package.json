@@ -1,0 +1,92 @@
+{
+  "name": "dsh-gb",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./mode": "./mode.js",
+    "./package.json": "./package.json",
+    "./client": "./client.js",
+    "./typert": "./typert.js",
+    "./mcp": "./mcp.js"
+  },
+  "files": [
+    "index.js",
+    "mode.js",
+    "bridge.js",
+    "python/worker.py",
+    "python/result_view.py",
+    "scripts/build-client.js",
+    "scripts/install.py",
+    "cordis.patch.yml",
+    "gb.lock.json",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "workbench.js",
+    "wire.js",
+    "typert.js",
+    "client.js",
+    "python/input_ops.py",
+    "python/model_ops.py",
+    "client-src.js",
+    "python/path_policy.py",
+    "bootstrap.js",
+    "paths.js",
+    "requirements.lock",
+    "requirements.versions.json",
+    "python/dependency_policy.py",
+    "python/dependencies.lock.json",
+    "python/process_lock.py",
+    "mcp.js"
+  ],
+  "engines": {
+    "dsh": "0.2.2-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:python": "python -m unittest discover -s tests -p test_*.py",
+    "setup:gb": "python scripts/setup_gb.py",
+    "build:client": "node scripts/build-client.js",
+    "prepack": "node scripts/build-client.js",
+    "test:full-grid": "node scripts/validate_full_grid.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "zod": "^4.6.7",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@modelcontextprotocol/client": "2.4.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0"
+  },
+  "bin": {
+    "dsh-gb-mcp": "./mcp.js"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-subprocess-local": {
+      "optional": true
+    }
+  }
+}
